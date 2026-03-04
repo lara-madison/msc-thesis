@@ -20,6 +20,7 @@ class StimVisitor(ParseTreeVisitor):
     lenient = False
     qubit_map = []
     tot_num = 0
+    errors = []
 
     def _debugLog(self, msg):
         if self.verbose:
@@ -106,7 +107,7 @@ class StimVisitor(ParseTreeVisitor):
     def visitMeasurement_record_target(self, ctx:StimParser.Measurement_record_targetContext):
         self._debugLog("measurement targ visit")
         q = int(ctx.UINT().getText())
-        return ["record", q, False]
+        return ["record", q]
 
 
     # Visit a parse tree produced by StimParser#sweep_bit_target.
@@ -119,9 +120,11 @@ class StimVisitor(ParseTreeVisitor):
     # Visit a parse tree produced by StimParser#pauli_target.
     def visitPauli_target(self, ctx:StimParser.Pauli_targetContext):
         self._debugLog("pauli targ visit")
-        inverted = ctx.getText().startswith('!')
-        pauli = ctx.PAULI().getText()
-        q = int(ctx.UINT().getText())
+        targ = ctx.getText()
+        inverted = targ.startswith('!')
+        qubit = ctx.PAULI().getText()
+        pauli = qubit[0]
+        q = int(qubit[1:])
         return ["pauli", q, inverted, pauli]
 
     # Visit a parse tree produced by StimParser#combiner_target.
@@ -173,11 +176,7 @@ class StimVisitor(ParseTreeVisitor):
                     self.tot_num += 1
                 else:
                     print(f"mid R {self.qubit_map[qubit]}")
-                    self.circuit.add_gate("Measurement", self.qubit_map[qubit])
-                    self.circuit.add_gate("InitAncilla", self.tot_num)
-                    self.circuit.add_gate("H", self.tot_num)
-                    self.qubit_map[qubit] = self.tot_num
-                    self.tot_num += 1
+                    self.circuit.add_gate("Reset", self.qubit_map[qubit])
 
         elif name == "RX":
             for i in targets:
@@ -189,10 +188,8 @@ class StimVisitor(ParseTreeVisitor):
                     self.tot_num += 1
                 else:
                     print(f"mid RX {self.qubit_map[qubit]}")
-                    self.circuit.add_gate("Measurement", self.qubit_map[qubit])
-                    self.circuit.add_gate("InitAncilla", self.tot_num)
-                    self.qubit_map[qubit] = self.tot_num
-                    self.tot_num += 1
+                    self.circuit.add_gate("Reset", self.qubit_map[qubit])
+                    self.circuit.add_gate("H", self.qubit_map[qubit])
 
         elif name == "M" or name == "MZ": #Projects each target qubit into |0> or |1> and reports its value (false=|0>, true=|1>
             for i in targets:
@@ -234,13 +231,43 @@ class StimVisitor(ParseTreeVisitor):
             for i in targets:
                 self.circuit.add_gate("T", self.qubit_map[i[1]])
 
-
         elif name == "DEPOLARIZE1":
+                for i in targets:
+                    if self.qubit_map[i[1]] != -1:
+                        a = zx.symbolic.new_var(f"{len(self.errors)}_{0}", is_bool=True)
+                        b = zx.symbolic.new_var(f"{len(self.errors)}_{1}", is_bool=True)
+                        self.circuit.add_gate("XPhase", self.qubit_map[i[1]], a)
+                        self.circuit.add_gate("ZPhase", self.qubit_map[i[1]], b)
+                        self.errors.append((a,b,"depolarize1"))
+
+        elif name == "DEPOLARIZE2":
+            for index, targ in enumerate(targets):
+                if index % 2 == 0:
+                    qubit1 = targets[index][1]
+                    qubit2 = targets[index + 1][1]
+                    a = zx.symbolic.new_var(f"{len(self.errors)}_{0}", is_bool=True)
+                    b = zx.symbolic.new_var(f"{len(self.errors)}_{1}", is_bool=True)
+                    self.circuit.add_gate("XPhase", self.qubit_map[qubit1], a)
+                    self.circuit.add_gate("ZPhase", self.qubit_map[qubit1], b)
+                    c = zx.symbolic.new_var(f"{len(self.errors)}_{2}", is_bool=True)
+                    d = zx.symbolic.new_var(f"{len(self.errors)}_{3}", is_bool=True)
+                    self.circuit.add_gate("XPhase", self.qubit_map[qubit2], c)
+                    self.circuit.add_gate("ZPhase", self.qubit_map[qubit2], d)
+                    self.errors.append((a,b,c,d,"depolarize2"))
+
+        elif name == "Z_ERROR":
             for i in targets:
-                self.circuit.add_gate("T", self.qubit_map[i[1]])
+                a = zx.symbolic.new_var(f"z{len(self.errors)}", is_bool=True)
+                self.circuit.add_gate("ZPhase", self.qubit_map[i[1]], a)
+                self.errors.append((a,"z_error"))
 
+        elif name == "X_ERROR":
+            for i in targets:
+                a = zx.symbolic.new_var(f"x{len(self.errors)}", is_bool=True)
+                self.circuit.add_gate("XPhase", self.qubit_map[i[1]], a)
+                self.errors.append((a,"x_error"))
 
-        elif name == "TICK" or name == "QUBIT_COORDS" or name == "DETECTOR" or name == "OBSERVABLE_INCLUDE":
+        elif name == "TICK" or name == "DEPOLARIZE1" or name == "DEPOLARIZE2" or name == "X_ERROR" or name == "QUBIT_COORDS" or name == "DETECTOR" or name == "OBSERVABLE_INCLUDE" or name == "MPP" or name == "Z_ERROR":
             return
 
 
