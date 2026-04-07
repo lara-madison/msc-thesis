@@ -1,18 +1,344 @@
 import numpy as np
 import tsim
 import pyzx_param as zx
-import pyzx_param as zp
-import stim
-from typing import Union
 from fractions import Fraction
 import random
+import string
+import itertools
 
-from numpy.f2py.auxfuncs import throw_error
+def compute_amplitude(x: list[int], circuit_so_far: tsim.Circuit, n_qubits: int) -> complex:
+    """
+    Compute <x|C|0> by contracting the ZX graph of the circuit postselected on x.
 
-prevMatrix: np.ndarray = []
+    The trick: to get <x|C|0>, we append the bra <x| to the circuit as Z-phase
+    gates on the outputs, then contract the whole diagram to a scalar.
+    """
+    # Build PyZX circuit from QASM
+    g = circuit_so_far.diagram("pyzx")
+
+    last_vertices = {}
+    for v in g.vertices():
+        q = g.qubit(v)
+        if q not in last_vertices or g.row(v) > g.row(last_vertices[q]):
+            last_vertices[q] = v
+
+    # Post-select outputs on the bitstring x by plugging in Z[0] or Z[pi] spiders
+    # A Z-spider with phase 0 at an output wire selects |0>, phase pi selects |1>
+    for qubit, bit in enumerate(x):
+        out_vertex = last_vertices[qubit]
+        phase = Fraction(0) if bit == 0 else Fraction(1)  # 0 = |0>, pi = |1>
+        # Insert an X-spider with the right phase before the output
+        g.set_type(out_vertex, zx.VertexType.X)
+        # g.set_phase(out_vertex, phase)
+        g.add_params(out_vertex, 'a')
+        # else: g.add_params(out_vertex, 'b')
+
+    ##### to let a = 0 or 1 check tsim OR iterate
+
+    # Simplify with ParamZX's parameterised reduction
+    # NOTE: replace with the actual ParamZX simplify call — e.g. paramzx.full_reduce(g)
+    zx.full_reduce(g, paramSafe=True)
+
+    # Extract the scalar — PyZX stores it as g.scalar
+    amplitude = complex(g.scalar.to_number())
+    return amplitude / (np.sqrt(2) ** n_qubits)
+
+
+def _bitstring_to_index(bits: list[int]) -> int:
+    """Convert a bitstring [b_0, b_1, ..., b_{n-1}] to an integer index."""
+    idx = 0
+    for b in bits:
+        idx = (idx << 1) | b
+    return idx
+
 
 # ---------------------------------------------------------------------------
-# Amplitude calculator
+# Preprocessing
+#  ---------------------------------------------------------------------------
+
+def split_circuit_reduce(circ_until_now: tsim.Circuit, n_qubits: int, y: list[int], meas: list[str]) -> complex:
+    """
+    Compute <x|C|0> by contracting the ZX graph of the circuit postselected on x.
+
+    The trick: to get <x|C|0>, we append the bra <x| to the circuit as Z-phase
+    gates on the outputs, then contract the whole diagram to a scalar.
+    """
+    # Build PyZX circuit from QASM
+    g = circ_until_now.diagram("pyzx")
+
+    last_vertices = {}
+    for v in g.vertices():
+        q = g.qubit(v)
+        if q not in last_vertices or g.row(v) > g.row(last_vertices[q]):
+            last_vertices[q] = v
+
+    # Post-select outputs on the bitstring x by plugging in Z[0] or Z[pi] spiders
+    # A Z-spider with phase 0 at an output wire selects |0>, phase pi selects |1>
+    for qubit, bit in enumerate(y):
+        out_vertex = last_vertices[qubit]
+        # phase = Fraction(0) if bit == 0 else Fraction(1)  # 0 = |0>, pi = |1>
+        # Insert an X-spider with the right phase before the output
+        g.set_type(out_vertex, zx.VertexType.X)
+        # g.set_phase(out_vertex, phase)
+        g.add_params(out_vertex, y[qubit])
+        # else: g.add_params(out_vertex, 'b')
+
+    ##### to let a = 0 or 1 check tsim OR iterate
+
+    # Simplify with ParamZX's parameterised reduction
+    # NOTE: replace with the actual ParamZX simplify call — e.g. paramzx.full_reduce(g)
+    zx.full_reduce(g, paramSafe=True)
+
+    # Extract the scalar — PyZX stores it as g.scalar
+
+    return g
+
+
+def generate_labels(n, start_label = None):
+    labels = []
+    length = 1
+    while len(labels) < n:
+        for combo in itertools.product(string.ascii_lowercase, repeat=length):
+            m = ''.join(combo)
+            if start_label is not None:
+                m = start_label + m
+            labels.append(m)
+            if len(labels) == n:
+                break
+        length += 1
+    return labels
+
+
+def preprocessing(circuit: tsim.Circuit):
+    circ_until_now = tsim.Circuit()
+    num_qubits = circuit.num_qubits
+    y = generate_labels(num_qubits)
+    circ_until_now.append_from_stim_program_text(f"R {' '.join(str(q) for q in range(num_qubits))}")
+    measurement_rec = generate_labels(60, "m_")
+    all_sub_circuits = []
+
+    num_gates = len(circuit)
+    for gate in circuit:
+
+        targets = gate.targets_copy()
+        for i in range(0, len(targets)):
+
+            if gate.name in ("CX", "CNOT", "ZCX") and i % 2 == 0:
+                a = targets[i].qubit_value
+                b = targets[i + 1].qubit_value
+                circ_until_now.append_from_stim_program_text(f"CX {a} {b}")
+
+            if gate.name == "H":
+                q = targets[i].qubit_value
+                circ_until_now.append_from_stim_program_text(f"H {q}")
+
+                all_sub_circuits.append(split_circuit_reduce(circ_until_now, num_qubits, y, measurement_rec))
+
+            if gate.name == "Z":
+                q = targets[i].qubit_value
+                circ_until_now.append_from_stim_program_text(f"Z {q}")
+
+            if gate.name == "S":
+                q = targets[i].qubit_value
+                if gate.tag == "T":
+                    circ_until_now.append_from_stim_program_text(f"T {q}")
+                else:
+                    circ_until_now.append_from_stim_program_text(f"S {q}")
+
+
+            if gate.name == "X":  # Dont split
+                q = targets[i].qubit_value
+                circ_until_now.append_from_stim_program_text(f"X {q}")
+
+            if gate.name == "R":
+                q = targets[i].qubit_value
+                circ_until_now.append_from_stim_program_text(f"R {q}")
+
+            if gate.name == "RX":
+                q = targets[i].qubit_value
+                circ_until_now.append_from_stim_program_text(f"RX {q}")
+
+            if gate.name == "M":
+                q = targets[i].qubit_value
+                measurement_rec.append(y[q])
+                circ_until_now.append_from_stim_program_text(f"M {q}")
+
+            if gate.name == "MX":
+                q = targets[i].qubit_value
+                circ_until_now.append_from_stim_program_text(f"H {q}")
+
+                # HADAMARD
+                all_sub_circuits.append(split_circuit_reduce(circ_until_now, num_qubits, y, measurement_rec))
+
+                # Measure
+                measurement_rec.append(y[q])
+                circ_until_now.append_from_stim_program_text(f"M {q}")
+
+                # HADAMARD
+                all_sub_circuits.append(split_circuit_reduce(circ_until_now, num_qubits, y, measurement_rec))
+
+            if gate.name == "X_ERROR":
+                q = targets[i].qubit_value
+                prob = gate.gate_args_copy()
+                circ_until_now.append_from_stim_program_text(f"X_ERROR({prob[0]}) {q}")
+
+            if gate.name == "Z_ERROR":
+                q = targets[i].qubit_value
+                prob = gate.gate_args_copy()
+                circ_until_now.append_from_stim_program_text(f"Z_ERROR({prob[0]}) {q}")
+
+    return all_sub_circuits
+
+
+# ---------------------------------------------------------------------------
+# Algorithm for gate by gate
+# ---------------------------------------------------------------------------
+
+def gate_by_gate(circuit: tsim.Circuit, detectors: list = None):
+    circ_until_now = tsim.Circuit()
+    num_qubits = circuit.num_qubits
+    y = [0] * num_qubits
+    circ_until_now.append_from_stim_program_text(f"R {' '.join(str(q) for q in range(num_qubits))}")
+    measurement_rec = []
+    new_detectors = []
+
+    num_gates = len(circuit)
+    for gate in circuit:
+
+        targets = gate.targets_copy()
+        for i in range(0, len(targets)):
+
+            if gate.name in ("CX", "CNOT", "ZCX") and i%2==0:
+                a = targets[i].qubit_value
+                b = targets[i + 1].qubit_value
+                y[b] ^= y[a]
+                circ_until_now.append_from_stim_program_text(f"CX {a} {b}")
+
+            if gate.name == "H":
+                q = targets[i].qubit_value
+                circ_until_now.append_from_stim_program_text(f"H {q}")
+
+                #make two diverging copies of y
+                y0 = y.copy()
+                y0[q] = 0
+                y1 = y.copy()
+                y1[q] = 1
+
+                z0 = compute_amplitude(y0, circ_until_now, num_qubits)
+                z1 = compute_amplitude(y1, circ_until_now, num_qubits)
+
+                #calculate probability
+                denom = abs(z0) ** 2 + abs(z1) ** 2
+                p = abs(z0) ** 2 / denom
+
+                # Sample y_q
+                y[q] = 0 if random.random() < p else 1
+
+            if gate.name == "Z":
+                q = targets[i].qubit_value
+                circ_until_now.append_from_stim_program_text(f"Z {q}")
+
+            if gate.name == "S":
+                q = targets[i].qubit_value
+                if gate.tag == "T":
+                    circ_until_now.append_from_stim_program_text(f"T {q}")
+                else:
+                    circ_until_now.append_from_stim_program_text(f"S {q}")
+
+
+            # X = H · Z(π) · H
+            if gate.name == "X":   #Dont split
+                q = targets[i].qubit_value
+                circ_until_now.append_from_stim_program_text(f"X {q}")
+
+                y[q] ^= 1
+
+            if gate.name == "R":
+                q = targets[i].qubit_value
+                y[q] = 0
+                circ_until_now.append_from_stim_program_text(f"R {q}")
+
+            if gate.name == "RX":
+                q = targets[i].qubit_value
+
+                y[q] = 0
+                circ_until_now.append_from_stim_program_text(f"RX {q}")
+
+                # --- Initialze into |+> --- # always 50/50 so just sample directly
+                y[q] = 0 if random.random() < 0.5 else 1
+
+            if gate.name == "M":
+                q = targets[i].qubit_value
+                measurement_rec.append(y[q])
+                circ_until_now.append_from_stim_program_text(f"M {q}")
+
+            if gate.name == "MX":
+                q = targets[i].qubit_value
+                circ_until_now.append_from_stim_program_text(f"H {q}")
+
+                # HADAMARD
+                y0 = y.copy()
+                y0[q] = 0
+                y1 = y.copy()
+                y1[q] = 1
+
+                z0 = compute_amplitude(y0, circ_until_now, num_qubits)
+                z1 = compute_amplitude(y1, circ_until_now, num_qubits)
+
+                denom = abs(z0) ** 2 + abs(z1) ** 2
+                p = abs(z0) ** 2 / denom
+
+                y[q] = 0 if random.random() < p else 1
+
+                # Measure
+
+                measurement_rec.append(y[q])
+                circ_until_now.append_from_stim_program_text(f"M {q}")
+
+                #HADAMARD
+                y0 = y.copy()
+                y0[q] = 0
+                y1 = y.copy()
+                y1[q] = 1
+
+                z0 = compute_amplitude(y0, circ_until_now, num_qubits)
+                z1 = compute_amplitude(y1, circ_until_now, num_qubits)
+
+                denom = abs(z0) ** 2 + abs(z1) ** 2
+                p = abs(z0) ** 2 / denom
+
+                y[q] = 0 if random.random() < p else 1
+
+            if gate.name == "X_ERROR":
+                q = targets[i].qubit_value
+                prob = gate.gate_args_copy()
+
+                if random.random() < prob[0]:
+                    y[q] ^= 1
+                circ_until_now.append_from_stim_program_text(f"X_ERROR({prob[0]}) {q}")
+
+            if gate.name == "Z_ERROR":
+                q = targets[i].qubit_value
+                prob = gate.gate_args_copy()
+                circ_until_now.append_from_stim_program_text(f"Z_ERROR({prob[0]}) {q}")
+
+        if gate.name == "DETECTOR":
+            result = 0
+            for i in targets:
+                result ^= measurement_rec[i.value]
+            new_detectors.append(result)
+            if detectors is not None:
+                if detectors[len(detectors) - 1] != new_detectors[-1]:
+                    return False, None, detectors
+
+    if detectors is None:
+        detectors = new_detectors
+
+    return True, y, detectors
+
+
+# ---------------------------------------------------------------------------
+# Amplitude calculator PREV
 # ---------------------------------------------------------------------------
 #
 # def compute_amplitude(
@@ -99,276 +425,3 @@ prevMatrix: np.ndarray = []
 #     if norm > 1e-15:
 #         state /= norm
 #     return state
-
-
-
-def compute_amplitude(x: list[int], circuit_so_far: tsim.Circuit, n_qubits: int) -> complex:
-    """
-    Compute <x|C|0> by contracting the ZX graph of the circuit postselected on x.
-
-    The trick: to get <x|C|0>, we append the bra <x| to the circuit as Z-phase
-    gates on the outputs, then contract the whole diagram to a scalar.
-    """
-    # Build PyZX circuit from QASM
-    g = circuit_so_far.diagram("pyzx")
-
-    last_vertices = {}
-    for v in g.vertices():
-        q = g.qubit(v)
-        if q not in last_vertices or g.row(v) > g.row(last_vertices[q]):
-            last_vertices[q] = v
-
-    # Post-select outputs on the bitstring x by plugging in Z[0] or Z[pi] spiders
-    # A Z-spider with phase 0 at an output wire selects |0>, phase pi selects |1>
-    for qubit, bit in enumerate(x):
-        out_vertex = last_vertices[qubit]
-        phase = Fraction(0) if bit == 0 else Fraction(1)  # 0 = |0>, pi = |1>
-        # Insert an X-spider with the right phase before the output
-        g.set_type(out_vertex, zx.VertexType.X)
-        g.set_phase(out_vertex, phase)
-        # g.add_params(out_vertex, 'a')
-        # else: g.add_params(out_vertex, 'b')
-
-    ##### to let a = 0 or 1 check tsim OR iterate
-
-    # Simplify with ParamZX's parameterised reduction
-    # NOTE: replace with the actual ParamZX simplify call — e.g. paramzx.full_reduce(g)
-    zx.full_reduce(g, paramSafe=True)
-
-    # Extract the scalar — PyZX stores it as g.scalar
-    amplitude = complex(g.scalar.to_number())
-    return amplitude / (np.sqrt(2) ** n_qubits)
-
-
-def _bitstring_to_index(bits: list[int]) -> int:
-    """Convert a bitstring [b_0, b_1, ..., b_{n-1}] to an integer index."""
-    idx = 0
-    for b in bits:
-        idx = (idx << 1) | b
-    return idx
-
-
-# ---------------------------------------------------------------------------
-# Algorithm for gate by gate
-# ---------------------------------------------------------------------------
-
-def preprocessing(circuit: tsim.Circuit, detectors: list = None):
-    circ_until_now = tsim.Circuit()
-    num_qubits = circuit.num_qubits
-    y = [0] * num_qubits
-    circ_until_now.append_from_stim_program_text(f"R {' '.join(str(q) for q in range(num_qubits))}")
-    measurement_rec = []
-    new_detectors = []
-
-    num_gates = len(circuit)
-    for gate in circuit:
-
-        targets = gate.targets_copy()
-        for i in range(0, len(targets)):
-
-            if gate.name in ("CX", "CNOT", "ZCX") and i%2==0:
-                a = targets[i].qubit_value
-                b = targets[i + 1].qubit_value
-                y[b] ^= y[a]
-                circ_until_now.append_from_stim_program_text(f"CX {a} {b}")
-
-            if gate.name == "H":
-                q = targets[i].qubit_value
-                circ_until_now.append_from_stim_program_text(f"H {q}")
-
-                #make two diverging copies of y
-                y0 = y.copy(); y0[q] = 0
-                y1 = y.copy(); y1[q] = 1
-
-                z0 = compute_amplitude(y0, circ_until_now, num_qubits)
-                z1 = compute_amplitude(y1, circ_until_now, num_qubits)
-
-                #calculate probability
-                denom = abs(z0) ** 2 + abs(z1) ** 2
-                p = abs(z0) ** 2 / denom
-
-                # Sample y_q
-                y[q] = 0 if random.random() < p else 1
-
-            # X = H · Z(π) · H
-            if gate.name == "X":   #Dont split
-                q = targets[i].qubit_value
-                circ_until_now.append_from_stim_program_text(f"X {q}")
-
-                y[q] ^= 1
-
-            if gate.name == "R":
-                q = targets[i].qubit_value
-                y[q] = 0
-                circ_until_now.append_from_stim_program_text(f"R {q}")
-
-            if gate.name == "RX":
-                q = targets[i].qubit_value
-
-                y[q] = 0
-                circ_until_now.append_from_stim_program_text(f"RX {q}")
-
-
-                # --- Initialze into |+> --- # always 50/50 so just sample directly
-                y[q] = 0 if random.random() < 0.5 else 1
-
-            if gate.name == "M":
-                q = targets[i].qubit_value
-                measurement_rec.append(y[q])
-                circ_until_now.append_from_stim_program_text(f"M {q}")
-
-
-            if gate.name == "MX":
-
-                # hadamard measure Hadamard
-
-                q = targets[i].qubit_value
-                measurement_rec.append(y[q])
-                circ_until_now.append_from_stim_program_text(f"MX {q}")
-
-        if gate.name == "DETECTOR":
-            result = 0
-            for i in targets:
-                result ^= measurement_rec[i.value]
-            new_detectors.append(result)
-            if detectors is not None:
-                if detectors[len(detectors)-1] != new_detectors[-1]:
-                    return False, None, None
-
-    if detectors is None:
-        detectors = new_detectors
-
-    return True, y, detectors
-
-
-def gate_by_gate(circuit: tsim.Circuit, detectors: list = None):
-    circ_until_now = tsim.Circuit()
-    num_qubits = circuit.num_qubits
-    y = [0] * num_qubits
-    circ_until_now.append_from_stim_program_text(f"R {' '.join(str(q) for q in range(num_qubits))}")
-    measurement_rec = []
-    new_detectors = []
-
-    num_gates = len(circuit)
-    for gate in circuit:
-
-        targets = gate.targets_copy()
-        for i in range(0, len(targets)):
-
-            if gate.name in ("CX", "CNOT", "ZCX") and i%2==0:
-                a = targets[i].qubit_value
-                b = targets[i + 1].qubit_value
-                y[b] ^= y[a]
-                circ_until_now.append_from_stim_program_text(f"CX {a} {b}")
-
-            if gate.name == "H":
-                q = targets[i].qubit_value
-                circ_until_now.append_from_stim_program_text(f"H {q}")
-
-                #make two diverging copies of y
-                y0 = y.copy()
-                y0[q] = 0
-                y1 = y.copy()
-                y1[q] = 1
-
-                z0 = compute_amplitude(y0, circ_until_now, num_qubits)
-                z1 = compute_amplitude(y1, circ_until_now, num_qubits)
-
-                #calculate probability
-                denom = abs(z0) ** 2 + abs(z1) ** 2
-                p = abs(z0) ** 2 / denom
-
-                # Sample y_q
-                y[q] = 0 if random.random() < p else 1
-
-            # X = H · Z(π) · H
-            if gate.name == "X":   #Dont split
-                q = targets[i].qubit_value
-                circ_until_now.append_from_stim_program_text(f"X {q}")
-
-                y[q] ^= 1
-
-            if gate.name == "R":
-                q = targets[i].qubit_value
-                y[q] = 0
-                circ_until_now.append_from_stim_program_text(f"R {q}")
-
-            if gate.name == "RX":
-                q = targets[i].qubit_value
-
-                y[q] = 0
-                circ_until_now.append_from_stim_program_text(f"RX {q}")
-
-                # --- Initialze into |+> --- # always 50/50 so just sample directly
-                y[q] = 0 if random.random() < 0.5 else 1
-
-            if gate.name == "M":
-                q = targets[i].qubit_value
-                measurement_rec.append(y[q])
-                circ_until_now.append_from_stim_program_text(f"M {q}")
-
-
-            if gate.name == "MX":
-                q = targets[i].qubit_value
-                circ_until_now.append_from_stim_program_text(f"H {q}")
-
-                # HADAMARD
-                y0 = y.copy()
-                y0[q] = 0
-                y1 = y.copy()
-                y1[q] = 1
-
-                z0 = compute_amplitude(y0, circ_until_now, num_qubits)
-                z1 = compute_amplitude(y1, circ_until_now, num_qubits)
-
-                denom = abs(z0) ** 2 + abs(z1) ** 2
-                p = abs(z0) ** 2 / denom
-
-                y[q] = 0 if random.random() < p else 1
-
-                # Measure
-
-                measurement_rec.append(y[q])
-                circ_until_now.append_from_stim_program_text(f"M {q}")
-
-                #HADAMARD
-                y0 = y.copy()
-                y0[q] = 0
-                y1 = y.copy()
-                y1[q] = 1
-
-                z0 = compute_amplitude(y0, circ_until_now, num_qubits)
-                z1 = compute_amplitude(y1, circ_until_now, num_qubits)
-
-                denom = abs(z0) ** 2 + abs(z1) ** 2
-                p = abs(z0) ** 2 / denom
-
-                y[q] = 0 if random.random() < p else 1
-
-            if gate.name == "X_ERROR":
-                q = targets[i].qubit_value
-                prob = gate.gate_args_copy()
-
-                if random.random() < prob[0]:
-                    y[q] ^= 1
-                circ_until_now.append_from_stim_program_text(f"X_ERROR({prob[0]}) {q}")
-
-            if gate.name == "Z_ERROR":
-                q = targets[i].qubit_value
-                prob = gate.gate_args_copy()
-                circ_until_now.append_from_stim_program_text(f"Z_ERROR({prob[0]}) {q}")
-
-        if gate.name == "DETECTOR":
-            result = 0
-            for i in targets:
-                result ^= measurement_rec[i.value]
-            new_detectors.append(result)
-            if detectors is not None:
-                if detectors[len(detectors) - 1] != new_detectors[-1]:
-                    return False, None, detectors
-
-    if detectors is None:
-        detectors = new_detectors
-
-    return True, y, detectors
-
