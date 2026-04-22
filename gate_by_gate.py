@@ -155,10 +155,10 @@ def preprocessing(circuit: tsim.Circuit) :
 
                 # Measure
                 circ_until_now.append_from_stim_program_text(f"M {q}")
-
-                # HADAMARD
-                circ_until_now.append_from_stim_program_text(f"H {q}")
-                all_sub_circuits.append(split_circuit_reduce(circ_until_now, y, num_qubits))
+                #
+                # # HADAMARD
+                # circ_until_now.append_from_stim_program_text(f"H {q}")
+                # all_sub_circuits.append(split_circuit_reduce(circ_until_now, y, num_qubits))
 
             elif gate.name == "X_ERROR":
                 q = targets[i].qubit_value
@@ -170,15 +170,15 @@ def preprocessing(circuit: tsim.Circuit) :
                 prob = gate.gate_args_copy()
                 circ_until_now.append_from_stim_program_text(f"Z_ERROR({prob[0]}) {q}")
 
-        if gate.name == "DETECTOR":
-            targets = gate.targets_copy()
-            targ_s = ""
-            if gate.name == "DETECTOR":
-                arr = [" rec"] * len(targets)
-                for i, val in enumerate(targets):
-                    targ_s += arr[i] + f"[{val.value}]"
-
-            circ_until_now.append_from_stim_program_text(f"DETECTOR{targ_s}")
+        # if gate.name == "DETECTOR":
+        #     targets = gate.targets_copy()
+        #     targ_s = ""
+        #     if gate.name == "DETECTOR":
+        #         arr = [" rec"] * len(targets)
+        #         for i, val in enumerate(targets):
+        #             targ_s += arr[i] + f"[{val.value}]"
+        #
+        #     circ_until_now.append_from_stim_program_text(f"DETECTOR{targ_s}")
 
     return all_sub_circuits
 
@@ -215,7 +215,7 @@ def gate_by_gate(circuit: tsim.Circuit, split_circs: list[GraphS], detectors: li
                 q = targets[i].qubit_value
                 circ_until_now.append_from_stim_program_text(f"H {q}")
                 rec = dict(zip(all_dicts.rec_list, all_dicts.measurement_rec))
-                m = dict(zip(all_dicts.reset_list, all_dicts.reset_vals))
+                m = dict(zip(all_dicts.reset_list, all_dicts.measurement_rec))
 
                 #make two diverging copies of y
                 val0 = create_y(0, y, q, strings)
@@ -283,7 +283,7 @@ def gate_by_gate(circuit: tsim.Circuit, split_circs: list[GraphS], detectors: li
                 # HADAMARD
                 circ_until_now.append_from_stim_program_text(f"H {q}")
                 rec = dict(zip(all_dicts.rec_list, all_dicts.measurement_rec))
-                m = dict(zip(all_dicts.reset_list, all_dicts.reset_vals))
+                m = dict(zip(all_dicts.reset_list, all_dicts.measurement_rec))
 
                 # make two diverging copies of y
                 val0 = create_y(0, y, q, strings)
@@ -303,24 +303,24 @@ def gate_by_gate(circuit: tsim.Circuit, split_circs: list[GraphS], detectors: li
                 all_dicts.measurement_rec.append(y[q])
                 circ_until_now.append_from_stim_program_text(f"M {q}")
 
-                #HADAMARD
-                circ_until_now.append_from_stim_program_text(f"H {q}")
-                rec = dict(zip(all_dicts.rec_list, all_dicts.measurement_rec))
-                m = dict(zip(all_dicts.reset_list, all_dicts.reset_vals))
-
-                # make two diverging copies of y
-                val0 = create_y(0, y, q, strings)
-                val1 = create_y(1, y, q, strings)
-
-                z0 = comp_amplitude(val0 | rec | m, split_circs[num_Had], num_qubits)
-                z1 = comp_amplitude(val1 | rec | m, split_circs[num_Had], num_qubits)
-
-                denom = abs(z0) ** 2 + abs(z1) ** 2
-                p = abs(z0) ** 2 / denom
-
-                y[q] = 0 if random.random() < p else 1
-
-                num_Had += 1
+                # #HADAMARD
+                # circ_until_now.append_from_stim_program_text(f"H {q}")
+                # rec = dict(zip(all_dicts.rec_list, all_dicts.measurement_rec))
+                # m = dict(zip(all_dicts.reset_list, all_dicts.reset_vals))
+                #
+                # # make two diverging copies of y
+                # val0 = create_y(0, y, q, strings)
+                # val1 = create_y(1, y, q, strings)
+                #
+                # z0 = comp_amplitude(val0 | rec | m, split_circs[num_Had], num_qubits)
+                # z1 = comp_amplitude(val1 | rec | m, split_circs[num_Had], num_qubits)
+                #
+                # denom = abs(z0) ** 2 + abs(z1) ** 2
+                # p = abs(z0) ** 2 / denom
+                #
+                # y[q] = 0 if random.random() < p else 1
+                #
+                # num_Had += 1
 
             if gate.name == "X_ERROR":
                 q = targets[i].qubit_value
