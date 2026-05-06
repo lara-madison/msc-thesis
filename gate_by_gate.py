@@ -34,24 +34,28 @@ def generate_labels(n, start_label = None):
 #  ---------------------------------------------------------------------------
 
 
-def comp_amplitude(val_param: dict[str, Fraction], raw_graph: GraphS, n_qubits: int) -> complex:
+def comp_amplitude(val_param: dict[str, Fraction], paramsafe_graph: GraphS, n_qubits: int) -> complex:
     """
-    Compute <x|C|0> by contracting the ZX graph of the circuit postselected on x.
+    Compute <x|C|0>. Heavy preprocessing (interior_clifford_simp,
+    pivot_gadget_simp) was done once via paramSafe full_reduce. Here we
+    substitute concrete boolean params, then finish with full_reduce
+    (which now only needs to fire gadget_simp / copy_simp / supplementarity_simp
+    plus a final clifford pass) and the BSS decomposition.
 
-    Inlines the boolean variables in `val_param` into the diagram's vertex phases,
-    then runs a non-paramSafe full_reduce + find_stabilizer_decomp. Reducing with
-    concrete values lets gadget_simp / copy_simp fire, which is what kills the
-    spurious sqrt(2) factor that paramSafe-mode reduction leaves behind.
+    For deterministic measurement outcomes the substituted graph collapses to
+    tcount=0 and find_stabilizer_decomp short-circuits to [g] — that's the
+    case the previous all-decomp-at-preprocessing path got wrong, because
+    cross-leaf cancellations only happen exactly when graph rewrites recognise
+    them BEFORE the stabilizer decomposition expands.
     """
-    g = raw_graph.copy()
+    g = paramsafe_graph.copy()
     for v in list(g.vertices()):
         params = set(g.get_params(v))
         if not params:
             continue
         added = Fraction(0)
         for p in params:
-            v_val = val_param.get(p, 0)
-            added += Fraction(int(v_val))
+            added += Fraction(int(val_param.get(p, 0)))
         if added != 0:
             g.add_to_phase(v, added)
         g.set_params(v, set())
@@ -59,7 +63,7 @@ def comp_amplitude(val_param: dict[str, Fraction], raw_graph: GraphS, n_qubits: 
     gs = zx.simulate.find_stabilizer_decomp(g)
     amplitude = 0
     for h in gs:
-        amplitude += h.scalar.evaluate_scalar({})
+        amplitude += h.scalar.evaluate_scalar(dict(val_param))
     return amplitude / (np.sqrt(2) ** n_qubits)
 
 
@@ -68,10 +72,10 @@ def comp_amplitude(val_param: dict[str, Fraction], raw_graph: GraphS, n_qubits: 
 #  ---------------------------------------------------------------------------
 
 def split_circuit_reduce(circ_until_now: tsim.Circuit, y: list[int], num_qubits: int) -> GraphS:
-    """Build the raw pyzx diagram for the partial circuit and attach output post-selection
-    vertices with symbolic y-variables. Defer all reduction to per-shot, after concrete
-    values for m[k] / rec[j] / y are substituted — paramSafe reduction here drops
-    simplifications that are needed for correctness (notably gadget_simp / copy_simp)."""
+    """Build the diagram for the partial circuit, attach symbolic y-output post-selections,
+    then do paramSafe full_reduce once. The interior clifford / pivot-gadget passes are
+    amortised across all shots; per-shot work is just substitute + the param-unsafe
+    closing simps + stabilizer decomp (cheap when post-substitution tcount==0)."""
     g = circ_until_now.diagram("pyzx")
 
     last_vertices = {}
@@ -86,6 +90,7 @@ def split_circuit_reduce(circ_until_now: tsim.Circuit, y: list[int], num_qubits:
             g.set_type(out_vertex, zx.VertexType.X)
             g.add_params(out_vertex, y[qubit])
 
+    zx.full_reduce(g, paramSafe=True)
     return g
 
 def preprocessing(circuit: tsim.Circuit) :
@@ -285,15 +290,15 @@ def gate_by_gate(circuit: tsim.Circuit, split_circs: list[GraphS], detectors: li
     return True, y, detectors, new_observables
 
 
-def perform_had(dics, split_circ: GraphS, num_qubits, y, q):
+def perform_had(dics, split_graph: GraphS, num_qubits, y, q):
     rec = dict(zip(dics.rec_list, dics.measurement_rec))
     m = dict(zip(dics.reset_list, dics.reset_vals))
 
     val0 = create_y(0, y, q, dics.strings)
     val1 = create_y(1, y, q, dics.strings)
 
-    z0 = comp_amplitude(val0 | rec | m, split_circ, num_qubits)
-    z1 = comp_amplitude(val1 | rec | m, split_circ, num_qubits)
+    z0 = comp_amplitude(val0 | rec | m, split_graph, num_qubits)
+    z1 = comp_amplitude(val1 | rec | m, split_graph, num_qubits)
 
     denom = abs(z0) ** 2 + abs(z1) ** 2
     if denom == 0:

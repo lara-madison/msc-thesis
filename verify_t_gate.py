@@ -13,7 +13,6 @@ sys.path.insert(0, str(_CUTTING))
 
 import tsim
 import stim
-import gen
 
 from d_3_circuit_definitions import (
     circuit_source_injection_T,
