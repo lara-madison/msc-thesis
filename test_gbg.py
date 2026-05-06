@@ -11,7 +11,7 @@ class MyTestCase(unittest.TestCase):
         N, num, j = 100, 0, 0
         detects = None
         for _ in range(N):
-            passed, result, detects = gbg.gate_by_gate(circuit, circ_splits, detects)
+            passed, result, detects, obs = gbg.gate_by_gate(circuit, circ_splits, detects)
             j += 1
             if passed:
                 num += 1
@@ -28,7 +28,7 @@ class MyTestCase(unittest.TestCase):
         N, num, j = 100, 0, 0
         detects = None
         for _ in range(N):
-            passed, result, detects = gbg.gate_by_gate(circuit, circ_splits, detects)
+            passed, result, detects, obs = gbg.gate_by_gate(circuit, circ_splits, detects)
             j += 1
             if passed:
                 num += 1
@@ -48,7 +48,7 @@ class MyTestCase(unittest.TestCase):
         N, num, j = 100, 0, 0
         detects = None
         for _ in range(N):
-            passed, result, detects = gbg.gate_by_gate(circuit, circ_splits, detects)
+            passed, result, detects, obs = gbg.gate_by_gate(circuit, circ_splits, detects)
             j += 1
             if passed:
                 num += 1
@@ -78,7 +78,7 @@ class MyTestCase(unittest.TestCase):
         N, num, j = 500, 0, 0
         detects = None
         for _ in range(N):
-            passed, result, detects = gbg.gate_by_gate(circuit, circ_splits, detects)
+            passed, result, detects, obs = gbg.gate_by_gate(circuit, circ_splits, detects)
             j += 1
             if passed:
                 num += 1
@@ -98,7 +98,7 @@ class MyTestCase(unittest.TestCase):
         N, num, j = 5000, 0, 0
         detects = None
         for _ in range(N):
-            passed, result, detects = gbg.gate_by_gate(circuit, circ_splits, detects)
+            passed, result, detects, obs = gbg.gate_by_gate(circuit, circ_splits, detects)
             j += 1
             if passed:
                 num += 1
@@ -243,7 +243,7 @@ class MyTestCase(unittest.TestCase):
         N, num, j = 50, 0, 0
         detects = None
         for _ in range(N):
-            passed, result, detects = gbg.gate_by_gate(circuit, circ_splits, detects)
+            passed, result, detects, obs = gbg.gate_by_gate(circuit, circ_splits, detects)
             j += 1
             if passed:
                 num += 1
@@ -334,7 +334,7 @@ class MyTestCase(unittest.TestCase):
         N, num, j = 50, 0, 0
         detects = None
         for _ in range(N):
-            passed, result, detects = gbg.gate_by_gate(circuit, circ_splits, detects)
+            passed, result, detects, obs = gbg.gate_by_gate(circuit, circ_splits, detects)
             j += 1
             if passed:
                 num += 1
