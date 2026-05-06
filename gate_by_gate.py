@@ -224,7 +224,12 @@ def gate_by_gate(circuit: tsim.Circuit, split_circs: list[list[GraphS]], detecto
 
             if gate.name == "R":
                 q = targets[i].qubit_value
-                all_dicts.reset_vals.append(y[q])
+                # Only subsequent resets get an m[i] parameter in tsim's parametrized
+                # graph (see tsim/core/instructions.py:_r). A fresh reset adds a new
+                # X-spider lane with no parameter, so appending here would shift the
+                # m[i] indexing in dict(zip(reset_list, reset_vals)).
+                if is_initialized[q]:
+                    all_dicts.reset_vals.append(y[q])
                 y[q] = 0
                 is_initialized[q] = True
 
