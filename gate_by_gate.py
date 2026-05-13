@@ -1,6 +1,12 @@
 import numpy as np
 from tsim.core.graph import evaluate_graph
 import tsim
+from tsim.noise.channels import (
+    error_probs,
+    pauli_channel_1_probs,
+    pauli_channel_2_probs,
+)
+
 import pyzx_param as zx
 from fractions import Fraction
 import random
@@ -49,6 +55,7 @@ def comp_amplitude(val_param: dict[str, Fraction], paramsafe_graph: GraphS, n_qu
     them BEFORE the stabilizer decomposition expands.
     """
     g = paramsafe_graph.copy()
+
     for v in list(g.vertices()):
         params = set(g.get_params(v))
         if not params:
@@ -60,23 +67,26 @@ def comp_amplitude(val_param: dict[str, Fraction], paramsafe_graph: GraphS, n_qu
             g.add_to_phase(v, added)
         g.set_params(v, set())
     zx.full_reduce(g)
+    # gs = zx.simulate.find_stabilizer_decomp(g)
+    # gs = tsim.compile.stabrank.find_stab(g, "cat5")
     gs = zx.simulate.find_stabilizer_decomp(g)
     amplitude = 0
     for h in gs:
         amplitude += h.scalar.evaluate_scalar(dict(val_param))
+    # print(amplitude) #TEMP
     return amplitude / (np.sqrt(2) ** n_qubits)
 
 
 # ---------------------------------------------------------------------------
 # Preprocessing
 #  ---------------------------------------------------------------------------
-
-def split_circuit_reduce(circ_until_now: tsim.Circuit, y: list[int], num_qubits: int) -> GraphS:
+def split_circuit_reduce(circ_until_now: tsim.Circuit, y: list[int], num_qubits: int) -> list[GraphS]:
     """Build the diagram for the partial circuit, attach symbolic y-output post-selections,
     then do paramSafe full_reduce once. The interior clifford / pivot-gadget passes are
     amortised across all shots; per-shot work is just substitute + the param-unsafe
     closing simps + stabilizer decomp (cheap when post-substitution tcount==0)."""
-    g = circ_until_now.diagram("pyzx")
+    g = circ_until_now.get_graph() #.diagram("pyzx")
+    #zx.draw(g,labels=True)
 
     last_vertices = {}
     for v in g.vertices():
@@ -91,6 +101,7 @@ def split_circuit_reduce(circ_until_now: tsim.Circuit, y: list[int], num_qubits:
             g.add_params(out_vertex, y[qubit])
 
     zx.full_reduce(g, paramSafe=True)
+    # gs = zx.simulate.find_stabilizer_decomp(g)
     return g
 
 def preprocessing(circuit: tsim.Circuit) :
@@ -99,6 +110,8 @@ def preprocessing(circuit: tsim.Circuit) :
     y = generate_labels(num_qubits)
     is_initialized = [False] * num_qubits
     all_sub_circuits = []
+    noise_ops: list[dict] = []
+    n_e = 0  # mirrors tsim's b.num_error_bits counter
 
     for gate in circuit:
 
@@ -165,13 +178,77 @@ def preprocessing(circuit: tsim.Circuit) :
 
             elif gate.name == "X_ERROR":
                 q = targets[i].qubit_value
-                prob = gate.gate_args_copy()
-                circ_until_now.append_from_stim_program_text(f"X_ERROR({prob[0]}) {q}")
+                p = gate.gate_args_copy()[0]
+                circ_until_now.append_from_stim_program_text(f"X_ERROR({p}) {q}")
+                noise_ops.append({
+                    "name": "X_ERROR", "qubits": (q,),
+                    "probs": error_probs(p),
+                    "e_start": n_e, "n_bits": 1,
+                })
+                n_e += 1
 
             elif gate.name == "Z_ERROR":
                 q = targets[i].qubit_value
-                prob = gate.gate_args_copy()
-                circ_until_now.append_from_stim_program_text(f"Z_ERROR({prob[0]}) {q}")
+                p = gate.gate_args_copy()[0]
+                circ_until_now.append_from_stim_program_text(f"Z_ERROR({p}) {q}")
+                noise_ops.append({
+                    "name": "Z_ERROR", "qubits": (q,),
+                    "probs": error_probs(p),
+                    "e_start": n_e, "n_bits": 1,
+                })
+                n_e += 1
+
+            elif gate.name == "DEPOLARIZE1":
+                q = targets[i].qubit_value
+                p = gate.gate_args_copy()[0]
+                circ_until_now.append_from_stim_program_text(f"DEPOLARIZE1({p}) {q}")
+                noise_ops.append({
+                    "name": "DEPOLARIZE1", "qubits": (q,),
+                    "probs": pauli_channel_1_probs(p / 3, p / 3, p / 3),
+                    "e_start": n_e, "n_bits": 2,
+                })
+                n_e += 2
+
+            elif gate.name == "DEPOLARIZE2" and i % 2 == 0:
+                q1 = targets[i].qubit_value
+                q2 = targets[i + 1].qubit_value
+                p = gate.gate_args_copy()[0]
+                circ_until_now.append_from_stim_program_text(f"DEPOLARIZE2({p}) {q1} {q2}")
+                noise_ops.append({
+                    "name": "DEPOLARIZE2", "qubits": (q1, q2),
+                    "probs": pauli_channel_2_probs(*([p / 15] * 15)),
+                    "e_start": n_e, "n_bits": 4,
+                })
+                n_e += 4
+
+            elif gate.name == "PAULI_CHANNEL_1":
+                q = targets[i].qubit_value
+                args = gate.gate_args_copy()
+                px, py, pz = args[0], args[1], args[2]
+                circ_until_now.append_from_stim_program_text(
+                    f"PAULI_CHANNEL_1({px}, {py}, {pz}) {q}"
+                )
+                noise_ops.append({
+                    "name": "PAULI_CHANNEL_1", "qubits": (q,),
+                    "probs": pauli_channel_1_probs(px, py, pz),
+                    "e_start": n_e, "n_bits": 2,
+                })
+                n_e += 2
+
+            elif gate.name == "PAULI_CHANNEL_2" and i % 2 == 0:
+                q1 = targets[i].qubit_value
+                q2 = targets[i + 1].qubit_value
+                args = list(gate.gate_args_copy())
+                arg_str = ",".join(str(a) for a in args)
+                circ_until_now.append_from_stim_program_text(
+                    f"PAULI_CHANNEL_2({arg_str}) {q1} {q2}"
+                )
+                noise_ops.append({
+                    "name": "PAULI_CHANNEL_2", "qubits": (q1, q2),
+                    "probs": pauli_channel_2_probs(*args),
+                    "e_start": n_e, "n_bits": 4,
+                })
+                n_e += 4
         #
         # if gate.name == "DETECTOR":
         #     targets = gate.targets_copy()
@@ -183,22 +260,32 @@ def preprocessing(circuit: tsim.Circuit) :
         #
         #     circ_until_now.append_from_stim_program_text(f"DETECTOR{targ_s}")
 
-    return all_sub_circuits
+    return all_sub_circuits, noise_ops
 
 
 # ---------------------------------------------------------------------------
 # Algorithm for gate by gate
 # ---------------------------------------------------------------------------
 
-def gate_by_gate(circuit: tsim.Circuit, split_circs: list[GraphS], detectors: list = None):
+def _sample_e_bits(noise_ops: list[dict]) -> dict[str, int]:
+    """Draw one realization per noise channel; return {e_i: 0/1, ...}."""
+    e_bits: dict[str, int] = {}
+    for op in noise_ops:
+        k = int(np.random.choice(len(op["probs"]), p=op["probs"]))
+        for i in range(op["n_bits"]):
+            e_bits[f"e{op['e_start'] + i}"] = (k >> i) & 1
+    return e_bits
+
+
+def gate_by_gate(circuit: tsim.Circuit, split_circs: list[GraphS],
+                 noise_ops: list[dict], detectors: list = None):
     circ_until_now = tsim.Circuit()
     num_qubits = circuit.num_qubits
     y = [0] * num_qubits
     all_dicts = AllDictionaries(num_qubits)
     strings = generate_labels(num_qubits)
     is_initialized = [False] * num_qubits
-    # dictionary = dict(zip(strings, y))
-    # circ_until_now.append_from_stim_program_text(f"R {' '.join(str(q) for q in range(num_qubits))}")
+    e_bits = _sample_e_bits(noise_ops)
     new_detectors = []
     new_observables = []
     num_Had = 0
@@ -214,7 +301,7 @@ def gate_by_gate(circuit: tsim.Circuit, split_circs: list[GraphS], detectors: li
                 y[b] ^= y[a]
 
             if gate.name == "H":
-                y = perform_had(all_dicts, split_circs[num_Had], num_qubits, y, targets[i].qubit_value)
+                y = perform_had(all_dicts, split_circs[num_Had], num_qubits, y, targets[i].qubit_value, e_bits)
                 num_Had += 1
 
             if gate.name == "X":   #Dont split
@@ -249,22 +336,15 @@ def gate_by_gate(circuit: tsim.Circuit, split_circs: list[GraphS], detectors: li
                 q = targets[i].qubit_value
 
                 # HADAMARD
-                y = perform_had(all_dicts, split_circs[num_Had], num_qubits, y, targets[i].qubit_value)
+                y = perform_had(all_dicts, split_circs[num_Had], num_qubits, y, targets[i].qubit_value, e_bits)
                 num_Had += 1
 
                 # Measure
                 all_dicts.measurement_rec.append(y[q])
 
-            if gate.name == "X_ERROR":
-                q = targets[i].qubit_value
-                prob = gate.gate_args_copy()
-
-                if random.random() < prob[0]:
-                    y[q] ^= 1
-
-            if gate.name == "Z_ERROR":
-                q = targets[i].qubit_value
-                prob = gate.gate_args_copy()
+            # X_ERROR / Z_ERROR / DEPOLARIZE1 / DEPOLARIZE2 / PAULI_CHANNEL_*
+            # are driven symbolically: their parameter spiders sit in split_circs
+            # and are substituted via e_bits in perform_had.
 
         if gate.name == "DETECTOR":
             result = 0
@@ -274,7 +354,6 @@ def gate_by_gate(circuit: tsim.Circuit, split_circs: list[GraphS], detectors: li
             new_detectors.append(result)
             if detectors is not None:
                 if detectors[len(new_detectors) - 1] != new_detectors[-1]:
-                    print("not passed")
                     return False, None, detectors, None
 
         if gate.name == "OBSERVABLE_INCLUDE":
@@ -290,19 +369,20 @@ def gate_by_gate(circuit: tsim.Circuit, split_circs: list[GraphS], detectors: li
     return True, y, detectors, new_observables
 
 
-def perform_had(dics, split_graph: GraphS, num_qubits, y, q):
+def perform_had(dics, split_graph: GraphS, num_qubits, y, q, e_bits: dict[str, int] | None = None):
     rec = dict(zip(dics.rec_list, dics.measurement_rec))
     m = dict(zip(dics.reset_list, dics.reset_vals))
+    e = e_bits or {}
 
     val0 = create_y(0, y, q, dics.strings)
     val1 = create_y(1, y, q, dics.strings)
 
-    z0 = comp_amplitude(val0 | rec | m, split_graph, num_qubits)
-    z1 = comp_amplitude(val1 | rec | m, split_graph, num_qubits)
+    z0 = comp_amplitude(val0 | rec | m | e, split_graph, num_qubits)
+    z1 = comp_amplitude(val1 | rec | m | e, split_graph, num_qubits)
 
     denom = abs(z0) ** 2 + abs(z1) ** 2
-    if denom == 0:
-        denom = 1
+    # if denom == 0:
+    #     denom = 1
     p = abs(z0) ** 2 / denom
 
     y[q] = 0 if random.random() < p else 1

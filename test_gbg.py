@@ -1,17 +1,19 @@
 import unittest
 import gate_by_gate as gbg
+import pyzx_param as param
 import tsim
+import numpy as np
 
 class MyTestCase(unittest.TestCase):
     def test_x_gate_flips_qubit(self):
         # X on qubit 0 should always produce |1>
         circuit = tsim.Circuit("R 0\nX 0")
-        circ_splits = gbg.preprocessing(circuit)
+        splits, noise_ops = gbg.preprocessing(circuit)
         counts = {}
         N, num, j = 100, 0, 0
         detects = None
         for _ in range(N):
-            passed, result, detects, obs = gbg.gate_by_gate(circuit, circ_splits, detects)
+            passed, result, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, detects)
             j += 1
             if passed:
                 num += 1
@@ -23,12 +25,12 @@ class MyTestCase(unittest.TestCase):
     def test_h_h(self):
         # X on qubit 0 should always produce |1>
         circuit = tsim.Circuit("R 0\nH 0\nH 0")
-        circ_splits = gbg.preprocessing(circuit)
+        splits, noise_ops = gbg.preprocessing(circuit)
         counts = {}
         N, num, j = 100, 0, 0
         detects = None
         for _ in range(N):
-            passed, result, detects, obs = gbg.gate_by_gate(circuit, circ_splits, detects)
+            passed, result, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, detects)
             j += 1
             if passed:
                 num += 1
@@ -41,14 +43,12 @@ class MyTestCase(unittest.TestCase):
     def test_bell_state(self):
         # H then CNOT produces Bell state — only |00> or |11> should appear
         circuit = tsim.Circuit("R 0 1\nH 0\nCX 0 1")
-        circ_splits = gbg.preprocessing(circuit)
-
-        circ_splits = gbg.preprocessing(circuit)
+        splits, noise_ops = gbg.preprocessing(circuit)
         counts = {}
         N, num, j = 100, 0, 0
         detects = None
         for _ in range(N):
-            passed, result, detects, obs = gbg.gate_by_gate(circuit, circ_splits, detects)
+            passed, result, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, detects)
             j += 1
             if passed:
                 num += 1
@@ -73,12 +73,12 @@ class MyTestCase(unittest.TestCase):
             MX 2
             DETECTOR rec[-1] rec[-2]
             """)
-        circ_splits = gbg.preprocessing(circuit)
+        splits, noise_ops = gbg.preprocessing(circuit)
         counts = {}
         N, num, j = 500, 0, 0
         detects = None
         for _ in range(N):
-            passed, result, detects, obs = gbg.gate_by_gate(circuit, circ_splits, detects)
+            passed, result, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, detects)
             j += 1
             if passed:
                 num += 1
@@ -93,12 +93,12 @@ class MyTestCase(unittest.TestCase):
         RX 0
         T 0
         MX 0""")
-        circ_splits = gbg.preprocessing(circuit)
+        splits, noise_ops = gbg.preprocessing(circuit)
         counts = {}
         N, num, j = 5000, 0, 0
         detects = None
         for _ in range(N):
-            passed, result, detects, obs = gbg.gate_by_gate(circuit, circ_splits, detects)
+            passed, result, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, detects)
             j += 1
             if passed:
                 num += 1
@@ -238,12 +238,12 @@ class MyTestCase(unittest.TestCase):
         DETECTOR(2.75, 0.9375, 0, -1, -9) rec[-15] rec[-2]
         OBSERVABLE_INCLUDE(0) rec[-34] rec[-1]
          """)
-        circ_splits = gbg.preprocessing(circuit)
+        splits, noise_ops = gbg.preprocessing(circuit)
         counts = {}
         N, num, j = 50, 0, 0
         detects = None
         for _ in range(N):
-            passed, result, detects, obs = gbg.gate_by_gate(circuit, circ_splits, detects)
+            passed, result, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, detects)
             j += 1
             if passed:
                 num += 1
@@ -330,15 +330,26 @@ class MyTestCase(unittest.TestCase):
         MX 6
         DETECTOR[POST-SELECTION] rec[-1]
         """)
-        circ_splits = gbg.preprocessing(circuit)
+        splits, noise_ops = gbg.preprocessing(circuit)
         N, num, j = 50, 0, 0
         detects = None
         for _ in range(N):
-            passed, result, detects, obs = gbg.gate_by_gate(circuit, circ_splits, detects)
+            passed, result, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, detects)
             j += 1
             if passed:
                 num += 1
         self.assertTrue(num == N)
+
+    # def test_many_t(self):
+    #     # H then CNOT produces Bell state — only |00> or |11> should appear
+    #     g = param.generate.cliffordT(20, 200)
+    #     param.full_reduce(g, paramSafe=True)
+    #     gs = param.simulate.find_stabilizer_decomp(g)
+    #
+    #     amplitude = 0
+    #     for h in gs:
+    #         amplitude += h.scalar.evaluate_scalar(dict(val_param))
+    #     print(amplitude / (np.sqrt(2) ** n_qubits))
 
 if __name__ == '__main__':
     unittest.main()
