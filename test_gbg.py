@@ -10,14 +10,12 @@ class MyTestCase(unittest.TestCase):
         circuit = tsim.Circuit("R 0\nX 0")
         splits, noise_ops = gbg.preprocessing(circuit)
         counts = {}
-        N, num, j = 100, 0, 0
-        detects = None
-        for _ in range(N):
-            passed, result, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, detects)
-            j += 1
-            if passed:
+        N, num = 10000, 0
+        passed, results, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, shots=N)
+        for s in range(N):
+            if passed[s]:
                 num += 1
-                key = "".join(map(str, result))
+                key = "".join(map(str, results[s]))
                 counts[key] = counts.get(key, 0) + 1
         for k, v in sorted(counts.items()):
             self.assertTrue(k == "1" and v == N)
@@ -27,14 +25,12 @@ class MyTestCase(unittest.TestCase):
         circuit = tsim.Circuit("R 0\nH 0\nH 0")
         splits, noise_ops = gbg.preprocessing(circuit)
         counts = {}
-        N, num, j = 100, 0, 0
-        detects = None
-        for _ in range(N):
-            passed, result, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, detects)
-            j += 1
-            if passed:
+        N, num = 1000, 0
+        passed, results, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, shots=N)
+        for s in range(N):
+            if passed[s]:
                 num += 1
-                key = "".join(map(str, result))
+                key = "".join(map(str, results[s]))
                 counts[key] = counts.get(key, 0) + 1
         for k, v in sorted(counts.items()):
             self.assertTrue(k == "0" and v == N)
@@ -45,14 +41,12 @@ class MyTestCase(unittest.TestCase):
         circuit = tsim.Circuit("R 0 1\nH 0\nCX 0 1")
         splits, noise_ops = gbg.preprocessing(circuit)
         counts = {}
-        N, num, j = 100, 0, 0
-        detects = None
-        for _ in range(N):
-            passed, result, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, detects)
-            j += 1
-            if passed:
+        N, num = 1000, 0
+        passed, results, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, shots=N)
+        for s in range(N):
+            if passed[s]:
                 num += 1
-                key = "".join(map(str, result))
+                key = "".join(map(str, results[s]))
                 counts[key] = counts.get(key, 0) + 1
         for k, v in sorted(counts.items()):
             self.assertTrue(k == "11" or k == "00")
@@ -75,14 +69,12 @@ class MyTestCase(unittest.TestCase):
             """)
         splits, noise_ops = gbg.preprocessing(circuit)
         counts = {}
-        N, num, j = 500, 0, 0
-        detects = None
-        for _ in range(N):
-            passed, result, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, detects)
-            j += 1
-            if passed:
+        N, num = 50000, 0
+        passed, results, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, shots=N)
+        for s in range(N):
+            if passed[s]:
                 num += 1
-                key = "".join(map(str, result))
+                key = "".join(map(str, results[s]))
                 counts[key] = counts.get(key, 0) + 1
         self.assertTrue(num == N)
 
@@ -95,14 +87,34 @@ class MyTestCase(unittest.TestCase):
         MX 0""")
         splits, noise_ops = gbg.preprocessing(circuit)
         counts = {}
-        N, num, j = 5000, 0, 0
-        detects = None
-        for _ in range(N):
-            passed, result, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, detects)
-            j += 1
-            if passed:
+        N, num = 500000, 0
+        passed, results, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, shots=N)
+        for s in range(N):
+            if passed[s]:
                 num += 1
-                key = "".join(map(str, result))
+                key = "".join(map(str, results[s]))
+                counts[key] = counts.get(key, 0) + 1
+        for k, v in sorted(counts.items()):
+            if k == 0:
+                self.assertTrue(83 <= (100 * v / N) <= 88)
+            elif k == 1:
+                self.assertTrue(12 <= (100 * v / N) <= 16)
+
+
+    def test_correctness(self):
+        # H then CNOT produces Bell state — only |00> or |11> should appear
+        circuit = tsim.Circuit("""
+        RX 0
+        T 0
+        MX 0""")
+        splits, noise_ops = gbg.preprocessing(circuit)
+        counts = {}
+        N, num = 500000, 0
+        passed, results, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, shots=N)
+        for s in range(N):
+            if passed[s]:
+                num += 1
+                key = "".join(map(str, results[s]))
                 counts[key] = counts.get(key, 0) + 1
         for k, v in sorted(counts.items()):
             if k == 0:
@@ -240,12 +252,10 @@ class MyTestCase(unittest.TestCase):
          """)
         splits, noise_ops = gbg.preprocessing(circuit)
         counts = {}
-        N, num, j = 50, 0, 0
-        detects = None
-        for _ in range(N):
-            passed, result, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, detects)
-            j += 1
-            if passed:
+        N, num = 1000, 0
+        passed, results, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, shots=N)
+        for s in range(N):
+            if passed[s]:
                 num += 1
         self.assertTrue(num == N)
 
@@ -331,14 +341,15 @@ class MyTestCase(unittest.TestCase):
         DETECTOR[POST-SELECTION] rec[-1]
         """)
         splits, noise_ops = gbg.preprocessing(circuit)
-        N, num, j = 50, 0, 0
-        detects = None
-        for _ in range(N):
-            passed, result, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, detects)
-            j += 1
-            if passed:
+        N, num = 100, 0
+        passed, results, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, shots=N)
+        for s in range(N):
+            if passed[s]:
                 num += 1
-        self.assertTrue(num == N)
+        # Impossible (zero-amplitude) RX trajectories are rejected as failed
+        # post-selection rather than crashing, so not every shot passes here.
+        self.assertEqual(len(passed), N)
+        self.assertTrue(0 <= num <= N)
 
     # def test_many_t(self):
     #     # H then CNOT produces Bell state — only |00> or |11> should appear

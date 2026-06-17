@@ -13,6 +13,7 @@ sys.path.insert(0, str(_CUTTING))
 
 import tsim
 import stim
+import gen
 
 from d_3_circuit_definitions import (
     circuit_source_injection_T,
@@ -46,21 +47,34 @@ def build_noisy_circuit(noise_strength):
     return tsim.Circuit(replace_s_with_t(noisy_inj)) + tsim.Circuit(circuit_source_projection_proj)
 
 
-def verify(noise_strength: float, n_shots: int, noiseless_raw: int = 0):
+def verify(noise_strength: float, n_shots: int, noiseless_raw: int = 0,
+           chunk_size: int = 10000):
+    """Post-select on a clean syndrome, then measure logical fidelity.
+
+    Shots are processed in batches of ``chunk_size`` to keep the batched
+    amplitude eval within GPU memory (a single huge batch exhausts it). Equal
+    batch sizes let JAX reuse the JIT-compiled kernels across chunks, so only
+    the first chunk pays compilation. ``kept`` and ``errors`` accumulate across
+    chunks; ``psr`` and ``fidelity`` are derived from the totals.
+    """
     circ = build_noisy_circuit(noise_strength)
-    splits = gbg.preprocessing(circ)
+    splits, noise_ops = gbg.preprocessing(circ)
     n_det = sum(1 for g in circ if g.name == "DETECTOR")
     ref = [0] * n_det                       # noiseless detectors are deterministically 0
 
     n_kept = 0
     n_errors = 0
-    for _ in range(n_shots):
-        ok, _y, _det, obs = gbg.gate_by_gate(circ, splits, ref)
-        if not ok:
-            continue                        # post-selection rejected
-        n_kept += 1
-        if obs and obs[0] != noiseless_raw:
-            n_errors += 1                   # undetected logical error
+    remaining = n_shots
+    while remaining > 0:
+        batch = min(chunk_size, remaining)
+        passed, _y, _det, obs = gbg.gate_by_gate(circ, splits, noise_ops, ref, shots=batch)
+        n_kept += sum(1 for s in range(batch) if passed[s])
+        n_errors += sum(
+            1
+            for s in range(batch)
+            if passed[s] and obs[s] and obs[s][0] != noiseless_raw
+        )                                   # undetected logical errors among kept shots
+        remaining -= batch
 
     psr = n_kept / n_shots
     fidelity = 1 - n_errors / n_kept if n_kept else 0.0
