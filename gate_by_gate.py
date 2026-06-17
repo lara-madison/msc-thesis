@@ -413,10 +413,10 @@ def perform_had(dics, split_graph: GraphS, num_qubits, y, q, passed, e_sample: n
         val0[i][q] = 0
         val1[i][q] = 1
 
-    paramList0 = np.array([val0[i] + dics.reset_vals[i] + dics.measurement_rec[i]
-                           + list(e_sample[i, :e_len]) for i in range(shots)])
-    paramList1 = np.array([val1[i] + dics.reset_vals[i] + dics.measurement_rec[i]
-                           + list(e_sample[i, :e_len]) for i in range(shots)])
+    precompute = [dics.reset_vals[i] + dics.measurement_rec[i] + list(e_sample[i, :e_len]) for i in range(shots)]
+
+    paramList0 = np.array([val0[i] + precompute[i] for i in range(shots)])
+    paramList1 = np.array([val1[i] + precompute[i] for i in range(shots)])
 
     z0 = comp_amplitude(paramList0, split_graph, num_qubits)
     z1 = comp_amplitude(paramList1, split_graph, num_qubits)
