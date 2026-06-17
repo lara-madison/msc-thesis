@@ -1,76 +1,40 @@
-QUBIT_COORDS(0, 0) 0
-QUBIT_COORDS(0, 2) 1
-QUBIT_COORDS(0, 4) 2
-QUBIT_COORDS(0, 6) 3
-QUBIT_COORDS(0, 8) 4
-QUBIT_COORDS(0, 10) 5
-QUBIT_COORDS(0, 12) 6
-QUBIT_COORDS(0, 14) 14
-QUBIT_COORDS(0, 16) 8
-QUBIT_COORDS(0, 18) 9
-QUBIT_COORDS(0, 20) 10
-QUBIT_COORDS(0, 22) 11
-QUBIT_COORDS(0, 24) 12
-QUBIT_COORDS(0, 11) 13
-QUBIT_COORDS(0, 28) 14
-QUBIT_COORDS(0, 30) 15
-QUBIT_COORDS(0, 32) 16
+import gate_by_gate as gbg
+import tsim
+
+circuit = tsim.Circuit("""
 RX 1 2 3
 R 4 5 6
-TICK
 CX 1 4 2 5 3 6
-TICK
 CX 1 5 2 6
 RX 7 8
-TICK
 CX 2 4 3 5 7 6 8 1
 RX 9 10 11
-TICK
 CX 9 4 10 5 11 7 1 8
-TICK
 CX 11 9 5 10 6 7
 RX 12
-TICK
 CX 4 9 7 11
-TICK
 CX 9 11
-TICK
-S_DAG 11
-TICK
+T_DAG 11
 CX 9 11
-TICK
 CX 7 11
 RX 13 14
-TICK
 CX 13 9 14 7
-TICK
 CX 9 13 7 14
-TICK
-TICK[EncodeT]
 RX 7
 R 6 15
 RX 5
 R 1
 RX 9
-R 4 16
-TICK
-CX 14 15 7 6 5 1 9 4 8 16
-TICK
+R 4 0
+CX 14 15 7 6 5 1 9 4 8 0
 CX 3 6 14 7 10 5 8 1 13 9 2 4
-TICK
-CX 15 14 2 5 11 9 16 8
-TICK
-CX 11 7 2 6 3 5 16 4
+CX 15 14 2 5 11 9 0 8
+CX 11 7 2 6 3 5 0 4
 RX 8
-TICK
-CX 7 11 6 2 5 3 4 16
-TICK
-CX 6 3 5 2 9 13 8 16
-TICK
+CX 7 11 6 2 5 3 4 0
+CX 6 3 5 2 9 13 8 0
 CX 6 15 5 10 1 8 9 11 4 2
-TICK
-CX 7 6 5 1 9 4 16 8
-TICK
+CX 7 6 5 1 9 4 0 8
 MX 7
 DETECTOR[POST-SELECTION] rec[-1]
 M 6
@@ -85,36 +49,22 @@ MX 9
 DETECTOR[POST-SELECTION] rec[-1]
 M 4
 DETECTOR[POST-SELECTION] rec[-1]
-MX 16
+MX 0
 DETECTOR[POST-SELECTION] rec[-1]
-TICK
-TICK[Stabilize]
 RX 9 4 1 5 7 6
-S_DAG 2 15 8 10 11 3 13
-TICK
+T_DAG 2 15 8 10 11 3 13
 CX 9 13 4 2 1 8 5 10 7 11 6 15
-TICK
 CX 11 9 5 1 2 6
-TICK
 CX 2 11 5 3
-TICK
 CX 2 5
-TICK
 MX 2
 DETECTOR[POST-SELECTION] rec[-1]
-TICK[CheckT]
-TICK
 RX 2
-TICK
 CX 2 5
-TICK
 CX 2 11 5 3
-TICK
 CX 11 9 5 1 2 6
-TICK
 CX 9 13 4 2 1 8 5 10 7 11 6 15
-TICK
-S 2 15 8 10 11 3 13
+T 2 15 8 10 11 3 13
 MX 9
 DETECTOR[POST-SELECTION] rec[-1]
 MX 4
@@ -127,6 +77,20 @@ MX 7
 DETECTOR[POST-SELECTION] rec[-1]
 MX 6
 DETECTOR[POST-SELECTION] rec[-1]
-TICK
-TICK[CheckT]
-TICK[SteaneCode]
+""")
+
+splits, noise_ops = gbg.preprocessing(circuit)
+
+runs = 100
+passes = fails = crashes = 0
+for i in range(runs):
+    try:
+        passed, results, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, shots=1)
+        if passed[0]:
+            passes += 1
+        else:
+            fails += 1
+    except AssertionError:
+        crashes += 1
+
+print(f"shots=1 x {runs}: passes={passes} fails={fails} denom0_crashes={crashes}")
