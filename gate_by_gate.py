@@ -9,6 +9,7 @@ from tsim.noise.channels import (
 
 import pyzx_param as zx
 from fractions import Fraction
+import functools
 import random
 import string
 import itertools
@@ -79,6 +80,8 @@ def comp_amplitude(pVals: list, compiled_gs: list[GraphS], n_qubits: int) -> com
 
     return norm_amps
 
+
+################ IN comp_amp test running the evaluate in a loop for shots/batch times
 
 # ---------------------------------------------------------------------------
 # Preprocessing
@@ -305,118 +308,117 @@ def _sample_e_bits(noise_ops: list[dict], shots: int) -> np.ndarray:
 
 def gate_by_gate(circuit: tsim.Circuit, split_circs: list[GraphS],
                  noise_ops: list[dict], detectors: list = None, shots: int = 1):
-    circ_until_now = tsim.Circuit()
     num_qubits = circuit.num_qubits
-    y = [[0] * num_qubits for _ in range(shots)]
+    y = np.zeros((shots, num_qubits), dtype=np.uint8)
     all_dicts = AllDictionaries(num_qubits, shots)
-    strings = generate_labels(num_qubits)
     is_initialized = [False] * num_qubits
     e_sample = _sample_e_bits(noise_ops, shots)
-    passed = [True] * shots
-    new_detectors = [[] for _ in range(shots)]
-    new_observables = [[] for _ in range(shots)]
+    passed = np.ones(shots, dtype=bool)
+    new_detectors = []      # one (shots,) uint8 column per DETECTOR gate
+    new_observables = []    # one (shots,) uint8 column per OBSERVABLE_INCLUDE gate
     num_Had = 0
-    num_gates = len(circuit)
     for gate in circuit:
 
         targets = gate.targets_copy()
         for i in range(0, len(targets)):
 
-            if gate.name in ("CX", "CNOT", "ZCX") and i%2==0:
+            if gate.name in ("CX", "CNOT", "ZCX") and i % 2 == 0:
                 a = targets[i].qubit_value
                 b = targets[i + 1].qubit_value
-                for s in range(shots):
-                    y[s][b] ^= y[s][a]
+                y[:, b] ^= y[:, a]
 
             if gate.name == "H":
                 compiled_gs, e_len = split_circs[num_Had]
-                y = perform_had(all_dicts, compiled_gs, num_qubits, y, targets[i].qubit_value, passed, e_sample, e_len, shots)
+                y = perform_had(all_dicts, compiled_gs, num_qubits, y,
+                                targets[i].qubit_value, passed, e_sample, e_len, shots)
                 num_Had += 1
 
-            if gate.name == "X":   #Dont split
+            if gate.name == "X":   # Dont split
                 q = targets[i].qubit_value
-                for s in range(shots):
-                    y[s][q] ^= 1
+                y[:, q] ^= 1
 
             if gate.name == "R":
                 q = targets[i].qubit_value
                 # Only subsequent resets get an m[i] parameter in tsim's parametrized
                 # graph (see tsim/core/instructions.py:_r). A fresh reset adds a new
                 # X-spider lane with no parameter, so appending here would shift the
-                # m[i] indexing in dict(zip(reset_list, reset_vals)).
-                for s in range(shots):
-                    if is_initialized[q]:
-                        all_dicts.reset_vals[s].append(y[s][q])
-                    y[s][q] = 0
+                # m[i] indexing. The is_initialized gate mirrors preprocessing's m_len.
+                if is_initialized[q]:
+                    all_dicts.reset_vals.append(y[:, q].copy())
+                y[:, q] = 0
                 is_initialized[q] = True
 
             if gate.name == "RX":
                 q = targets[i].qubit_value
-                for s in range(shots):
-                    if is_initialized[q]:
-                        all_dicts.reset_vals[s].append(y[s][q])
-                    y[s][q] = 0 if random.random() < 0.5 else 1
+                if is_initialized[q]:
+                    all_dicts.reset_vals.append(y[:, q].copy())
+                y[:, q] = (np.random.random(shots) >= 0.5).astype(np.uint8)
                 is_initialized[q] = True
 
             if gate.name == "M":
                 q = targets[i].qubit_value
-                for s in range(shots):
-                    all_dicts.measurement_rec[s].append(y[s][q])
+                all_dicts.measurement_rec.append(y[:, q].copy())
 
             if gate.name == "MX":
                 q = targets[i].qubit_value
 
-                # HADAMARD
+                # HADAMARD (must run before recording this MX's own measurement)
                 compiled_gs, e_len = split_circs[num_Had]
-                y = perform_had(all_dicts, compiled_gs, num_qubits, y, targets[i].qubit_value, passed, e_sample, e_len, shots)
+                y = perform_had(all_dicts, compiled_gs, num_qubits, y,
+                                targets[i].qubit_value, passed, e_sample, e_len, shots)
                 num_Had += 1
 
                 # Measure
-                for s in range(shots):
-                    all_dicts.measurement_rec[s].append(y[s][q])
+                all_dicts.measurement_rec.append(y[:, q].copy())
 
             # X_ERROR / Z_ERROR / DEPOLARIZE1 / DEPOLARIZE2 / PAULI_CHANNEL_*
             # are driven symbolically: their parameter spiders sit in split_circs
             # and are substituted via e_bits in perform_had.
 
         if gate.name == "DETECTOR":
-            for s in range(shots):
-                result = 0
-                for t in targets:
-                    result ^= all_dicts.measurement_rec[s][t.value]
-                new_detectors[s].append(result)
-
-            k = len(new_detectors[0]) - 1
-            ref = detectors[k] if detectors is not None else new_detectors[0][k]
-            for s in range(shots):
-                if new_detectors[s][k] != ref:
-                    passed[s] = False
+            # t.value stays the raw (negative) stim offset; measurement_rec is a
+            # measurement-ordered column list, so negative indexing resolves the
+            # right measurement. The zeros seed avoids in-place xor on a stored column.
+            col = functools.reduce(
+                np.bitwise_xor,
+                (all_dicts.measurement_rec[t.value] for t in targets),
+                np.zeros(shots, dtype=np.uint8),
+            )
+            new_detectors.append(col)
+            k = len(new_detectors) - 1
+            ref = detectors[k] if detectors is not None else int(col[0])
+            passed &= (col == ref)
 
         if gate.name == "OBSERVABLE_INCLUDE":
-            for s in range(shots):
-                result = 0
-                for t in targets:
-                    result ^= all_dicts.measurement_rec[s][t.value]
-                new_observables[s].append(result)
+            col = functools.reduce(
+                np.bitwise_xor,
+                (all_dicts.measurement_rec[t.value] for t in targets),
+                np.zeros(shots, dtype=np.uint8),
+            )
+            new_observables.append(col)
 
     if detectors is None:
-        detectors = new_detectors[0]
+        detectors = [int(c[0]) for c in new_detectors]
 
-    return passed, y, detectors, new_observables
+    observables = [[int(c[s]) for c in new_observables] for s in range(shots)]
+    return passed.tolist(), y.tolist(), detectors, observables
 
 
 def perform_had(dics, split_graph: GraphS, num_qubits, y, q, passed, e_sample: np.ndarray, e_len: int = 0, shots: int = 1):
-    val0 = [row[:] for row in y]
-    val1 = [row[:] for row in y]
+    reset_mat = (np.stack(dics.reset_vals, axis=1) if dics.reset_vals
+                 else np.zeros((shots, 0), dtype=np.uint8))
+    meas_mat = (np.stack(dics.measurement_rec, axis=1) if dics.measurement_rec
+                else np.zeros((shots, 0), dtype=np.uint8))
+    # Column order [y, reset, rec, e] matches split_circuit_reduce's paramList.
+    precompute = np.concatenate([reset_mat, meas_mat, e_sample[:, :e_len]], axis=1)
 
-    for i in range(shots):
-        val0[i][q] = 0
-        val1[i][q] = 1
+    val0 = y.copy()
+    val0[:, q] = 0
+    val1 = y.copy()
+    val1[:, q] = 1
 
-    precompute = [dics.reset_vals[i] + dics.measurement_rec[i] + list(e_sample[i, :e_len]) for i in range(shots)]
-
-    paramList0 = np.array([val0[i] + precompute[i] for i in range(shots)])
-    paramList1 = np.array([val1[i] + precompute[i] for i in range(shots)])
+    paramList0 = np.concatenate([val0, precompute], axis=1)
+    paramList1 = np.concatenate([val1, precompute], axis=1)
 
     z0 = comp_amplitude(paramList0, split_graph, num_qubits)
     z1 = comp_amplitude(paramList1, split_graph, num_qubits)
@@ -428,20 +430,15 @@ def perform_had(dics, split_graph: GraphS, num_qubits, y, q, passed, e_sample: n
     # Outcome 1 when u*denom >= |z0|^2 (matches the old scalar sampling rule).
     bit1 = np.random.random(shots) * safe_denom >= p0
 
-    for i in range(shots):
-        if not passed[i]:
-            # Already failed post-selection: its trajectory may be impossible
-            # (zero amplitude). Skip sampling, keep an arbitrary outcome.
-            y[i][q] = 0
-        elif denom[i] == 0:
-            # Zero-amplitude trajectory: this computational-basis configuration
-            # is not in the state's support (an impossible state, e.g. reached
-            # via uniform RX sampling). Reject it like a failed post-selection
-            # rather than sampling a meaningless 0/0 outcome.
-            passed[i] = False
-            y[i][q] = 0
-        else:
-            y[i][q] = 1 if bit1[i] else 0
+    # Zero-amplitude trajectories (denom == 0) are impossible computational-basis
+    # configurations (e.g. reached via uniform RX sampling); reject them like a
+    # failed post-selection rather than sampling a meaningless 0/0 outcome.
+    # Already-failed shots stay failed and keep an arbitrary 0; live shots take
+    # the sampled bit. `passed &= ...` is in place so the caller sees the update.
+    live = passed & (denom > 0)
+    y[:, q] = 0
+    y[live, q] = bit1[live].astype(np.uint8)
+    passed &= (denom > 0)
 
     return y
 
@@ -456,9 +453,11 @@ class AllDictionaries:
         self.strings = generate_labels(num_qubits)
         self.rec_list = [f"rec[{i}]" for i in range(40)]
         self.reset_list = [f"m[{i}]" for i in range(40)]
-        self.reset_vals = [[] for _ in range(shots)]
-        self.new_detectors = [[] for _ in range(shots)]
-        self.measurement_rec = [[] for _ in range(shots)]
+        # reset_vals / measurement_rec hold one (shots,) uint8 column per reset /
+        # measurement, appended in circuit order (was a per-shot list of lists).
+        self.reset_vals = []
+        self.new_detectors = []
+        self.measurement_rec = []
 
 def create_y(value: int, y: list, q: int, strings: list) -> list:
     y_alt = y.copy()
