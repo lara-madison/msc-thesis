@@ -6,6 +6,7 @@ Mirrors cuttingDecomp/run.py:123-127:
 """
 import re
 import sys
+import time
 from pathlib import Path
 
 _CUTTING = Path(__file__).resolve().parent.parent / "cuttingDecomp"
@@ -48,7 +49,7 @@ def build_noisy_circuit(noise_strength):
 
 
 def verify(noise_strength: float, n_shots: int, noiseless_raw: int = 0,
-           chunk_size: int = 10000):
+           chunk_size: int = 30000):
     """Post-select on a clean syndrome, then measure logical fidelity.
 
     Shots are processed in batches of ``chunk_size`` to keep the batched
@@ -65,8 +66,12 @@ def verify(noise_strength: float, n_shots: int, noiseless_raw: int = 0,
     n_kept = 0
     n_errors = 0
     remaining = n_shots
+    print("starting batching")
+    t_start = time.perf_counter()
+    batch_idx = 0
     while remaining > 0:
         batch = min(chunk_size, remaining)
+        t_batch = time.perf_counter()
         passed, _y, _det, obs = gbg.gate_by_gate(circ, splits, noise_ops, ref, shots=batch)
         n_kept += sum(1 for s in range(batch) if passed[s])
         n_errors += sum(
@@ -75,6 +80,10 @@ def verify(noise_strength: float, n_shots: int, noiseless_raw: int = 0,
             if passed[s] and obs[s] and obs[s][0] != noiseless_raw
         )                                   # undetected logical errors among kept shots
         remaining -= batch
+        batch_idx += 1
+        print(f"  batch {batch_idx} ({batch} shots): "
+              f"{time.perf_counter() - t_batch:.2f}s this batch, "
+              f"{time.perf_counter() - t_start:.2f}s elapsed")
 
     psr = n_kept / n_shots
     fidelity = 1 - n_errors / n_kept if n_kept else 0.0
@@ -86,13 +95,15 @@ def verify(noise_strength: float, n_shots: int, noiseless_raw: int = 0,
 
 
 def main():
-    NOISE_STRENGTHS = [0.001, 0.002, 0.005]
-    SHOTS = 200                             # gate-by-gate is slow; crank as time allows
+    NOISE_STRENGTHS = [0.001]
+    SHOTS = 1000                             # gate-by-gate is slow; crank as time allows
 
     print(f"{'p':<8} {'kept':>6} {'errors':>7} {'PSR':>8} {'fidelity':>10}")
     print(f"{'-'*8} {'-'*6} {'-'*7} {'-'*8} {'-'*10}")
     for p in NOISE_STRENGTHS:
         r = verify(p, SHOTS)
+        print(f"{'p':<8} {'kept':>6} {'errors':>7} {'PSR':>8} {'fidelity':>10}")
+        print(f"{'-' * 8} {'-' * 6} {'-' * 7} {'-' * 8} {'-' * 10}")
         print(f"{r['p']:<8} {r['kept']:>6} {r['errors']:>7} "
               f"{r['psr']:>8.3f} {r['fidelity']:>10.4f}")
 
