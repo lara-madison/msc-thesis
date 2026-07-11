@@ -42,19 +42,6 @@ def generate_labels(n, start_label = None):
 
 
 def comp_amplitude(pVals: list, compiled_gs: list[GraphS], n_qubits: int) -> complex:
-    """
-    Compute <x|C|0>. Heavy preprocessing (interior_clifford_simp,
-    pivot_gadget_simp) was done once via paramSafe full_reduce. Here we
-    substitute concrete boolean params, then finish with full_reduce
-    (which now only needs to fire gadget_simp / copy_simp / supplementarity_simp
-    plus a final clifford pass) and the BSS decomposition.
-
-    For deterministic measurement outcomes the substituted graph collapses to
-    tcount=0 and find_stabilizer_decomp short-circuits to [g] — that's the
-    case the previous all-decomp-at-preprocessing path got wrong, because
-    cross-leaf cancellations only happen exactly when graph rewrites recognise
-    them BEFORE the stabilizer decomposition expands.
-    """
     # g = paramsafe_graph.copy()
 
     # for v in list(g.vertices()):
@@ -430,9 +417,6 @@ def perform_had(dics, split_graph: GraphS, num_qubits, y, q, passed, e_sample: n
     # Outcome 1 when u*denom >= |z0|^2 (matches the old scalar sampling rule).
     bit1 = np.random.random(shots) * safe_denom >= p0
 
-    # Zero-amplitude trajectories (denom == 0) are impossible computational-basis
-    # configurations (e.g. reached via uniform RX sampling); reject them like a
-    # failed post-selection rather than sampling a meaningless 0/0 outcome.
     # Already-failed shots stay failed and keep an arbitrary 0; live shots take
     # the sampled bit. `passed &= ...` is in place so the caller sees the update.
     live = passed & (denom > 0)
