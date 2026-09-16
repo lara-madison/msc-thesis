@@ -4,6 +4,91 @@ import pyzx_param as param
 import tsim
 import numpy as np
 
+# <+|T|+> gives P(0) = cos^2(pi/8), P(1) = sin^2(pi/8).
+P_T_ZERO = np.cos(np.pi / 8) ** 2   # 0.853553...
+P_T_ONE = np.sin(np.pi / 8) ** 2    # 0.146447...
+
+
+BIG2_CIRCUIT = """
+        RX 1 2 3
+        R 4 5 6
+        CX 1 4 2 5 3 6
+        CX 1 5 2 6
+        RX 7 8
+        CX 2 4 3 5 7 6 8 1
+        RX 9 10 11
+        CX 9 4 10 5 11 7 1 8
+        CX 11 9 5 10 6 7
+        RX 12
+        CX 4 9 7 11
+        CX 9 11
+        T_DAG 11
+        CX 9 11
+        CX 7 11
+        RX 13 14
+        CX 13 9 14 7
+        CX 9 13 7 14
+        RX 7
+        R 6 15
+        RX 5
+        R 1
+        RX 9
+        R 4 0
+        CX 14 15 7 6 5 1 9 4 8 0
+        CX 3 6 14 7 10 5 8 1 13 9 2 4
+        CX 15 14 2 5 11 9 0 8
+        CX 11 7 2 6 3 5 0 4
+        RX 8
+        CX 7 11 6 2 5 3 4 0
+        CX 6 3 5 2 9 13 8 0
+        CX 6 15 5 10 1 8 9 11 4 2
+        CX 7 6 5 1 9 4 0 8
+        MX 7
+        
+        DETECTOR[POST-SELECTION] rec[-1]
+        M 6
+        DETECTOR[POST-SELECTION] rec[-1]
+        M 14
+        DETECTOR[POST-SELECTION] rec[-1]
+        MX 5
+        DETECTOR[POST-SELECTION] rec[-1]
+        M 1
+        DETECTOR[POST-SELECTION] rec[-1]
+        MX 9
+        DETECTOR[POST-SELECTION] rec[-1]
+        M 4
+        DETECTOR[POST-SELECTION] rec[-1]
+        MX 0
+        DETECTOR[POST-SELECTION] rec[-1]
+        RX 9 4 1 5 7 6
+        T_DAG 2 15 8 10 11 3 13
+        CX 9 13 4 2 1 8 5 10 7 11 6 15
+        CX 11 9 5 1 2 6
+        CX 2 11 5 3
+        CX 2 5
+        MX 2
+        DETECTOR[POST-SELECTION] rec[-1]
+        RX 2
+        CX 2 5
+        CX 2 11 5 3
+        CX 11 9 5 1 2 6
+        CX 9 13 4 2 1 8 5 10 7 11 6 15
+        T 2 15 8 10 11 3 13
+        MX 9
+        DETECTOR[POST-SELECTION] rec[-1]
+        MX 4
+        DETECTOR[POST-SELECTION] rec[-1]
+        MX 1
+        DETECTOR[POST-SELECTION] rec[-1]
+        MX 5
+        DETECTOR[POST-SELECTION] rec[-1]
+        MX 7
+        DETECTOR[POST-SELECTION] rec[-1]
+        MX 6
+        DETECTOR[POST-SELECTION] rec[-1]
+        """
+
+
 class MyTestCase(unittest.TestCase):
     def test_x_gate_flips_qubit(self):
         # X on qubit 0 should always produce |1>
@@ -17,8 +102,9 @@ class MyTestCase(unittest.TestCase):
                 num += 1
                 key = "".join(map(str, results[s]))
                 counts[key] = counts.get(key, 0) + 1
-        for k, v in sorted(counts.items()):
-            self.assertTrue(k == "1" and v == N)
+        # Assert outside the loop: an empty counts dict would pass vacuously.
+        self.assertEqual(num, N)
+        self.assertEqual(counts, {"1": N})
 
     def test_h_h(self):
         # X on qubit 0 should always produce |1>
@@ -32,8 +118,9 @@ class MyTestCase(unittest.TestCase):
                 num += 1
                 key = "".join(map(str, results[s]))
                 counts[key] = counts.get(key, 0) + 1
-        for k, v in sorted(counts.items()):
-            self.assertTrue(k == "0" and v == N)
+        # H H = identity, so every shot must come back to |0>.
+        self.assertEqual(num, N)
+        self.assertEqual(counts, {"0": N})
 
 
     def test_bell_state(self):
@@ -48,8 +135,10 @@ class MyTestCase(unittest.TestCase):
                 num += 1
                 key = "".join(map(str, results[s]))
                 counts[key] = counts.get(key, 0) + 1
-        for k, v in sorted(counts.items()):
-            self.assertTrue(k == "11" or k == "00")
+        self.assertEqual(num, N)
+        self.assertEqual(set(counts), {"00", "11"})     # both branches must occur
+        for k, v in counts.items():
+            self.assertTrue(0.45 <= v / N <= 0.55, f"{k} at {v / N:.3f}, expected ~0.5")
 
     def test_tricky_dect(self):
         # X on qubit 0 should always produce |1>
@@ -94,11 +183,13 @@ class MyTestCase(unittest.TestCase):
                 num += 1
                 key = "".join(map(str, results[s]))
                 counts[key] = counts.get(key, 0) + 1
-        for k, v in sorted(counts.items()):
-            if k == 0:
-                self.assertTrue(83 <= (100 * v / N) <= 88)
-            elif k == 1:
-                self.assertTrue(12 <= (100 * v / N) <= 16)
+        # NOTE: keys are strings, so the old `if k == 0` never matched and this
+        # test asserted nothing. N=500000 puts the binomial sigma near 0.05%,
+        # so a 1% band is ~20 sigma and will not flake.
+        self.assertEqual(num, N)
+        self.assertEqual(set(counts), {"0", "1"})
+        self.assertAlmostEqual(counts["0"] / N, P_T_ZERO, delta=0.01)
+        self.assertAlmostEqual(counts["1"] / N, P_T_ONE, delta=0.01)
 
 
     def test_correctness(self):
@@ -116,11 +207,13 @@ class MyTestCase(unittest.TestCase):
                 num += 1
                 key = "".join(map(str, results[s]))
                 counts[key] = counts.get(key, 0) + 1
-        for k, v in sorted(counts.items()):
-            if k == 0:
-                self.assertTrue(83 <= (100 * v / N) <= 88)
-            elif k == 1:
-                self.assertTrue(12 <= (100 * v / N) <= 16)
+        # NOTE: keys are strings, so the old `if k == 0` never matched and this
+        # test asserted nothing. N=500000 puts the binomial sigma near 0.05%,
+        # so a 1% band is ~20 sigma and will not flake.
+        self.assertEqual(num, N)
+        self.assertEqual(set(counts), {"0", "1"})
+        self.assertAlmostEqual(counts["0"] / N, P_T_ZERO, delta=0.01)
+        self.assertAlmostEqual(counts["1"] / N, P_T_ONE, delta=0.01)
 
     def test_big(self):
         # X on qubit 0 should always produce |1>
@@ -262,84 +355,7 @@ class MyTestCase(unittest.TestCase):
 
     def test_big2(self):
         # X on qubit 0 should always produce |1>
-        circuit = tsim.Circuit("""
-        RX 1 2 3
-        R 4 5 6
-        CX 1 4 2 5 3 6
-        CX 1 5 2 6
-        RX 7 8
-        CX 2 4 3 5 7 6 8 1
-        RX 9 10 11
-        CX 9 4 10 5 11 7 1 8
-        CX 11 9 5 10 6 7
-        RX 12
-        CX 4 9 7 11
-        CX 9 11
-        T_DAG 11
-        CX 9 11
-        CX 7 11
-        RX 13 14
-        CX 13 9 14 7
-        CX 9 13 7 14
-        RX 7
-        R 6 15
-        RX 5
-        R 1
-        RX 9
-        R 4 0
-        CX 14 15 7 6 5 1 9 4 8 0
-        CX 3 6 14 7 10 5 8 1 13 9 2 4
-        CX 15 14 2 5 11 9 0 8
-        CX 11 7 2 6 3 5 0 4
-        RX 8
-        CX 7 11 6 2 5 3 4 0
-        CX 6 3 5 2 9 13 8 0
-        CX 6 15 5 10 1 8 9 11 4 2
-        CX 7 6 5 1 9 4 0 8
-        MX 7
-        
-        DETECTOR[POST-SELECTION] rec[-1]
-        M 6
-        DETECTOR[POST-SELECTION] rec[-1]
-        M 14
-        DETECTOR[POST-SELECTION] rec[-1]
-        MX 5
-        DETECTOR[POST-SELECTION] rec[-1]
-        M 1
-        DETECTOR[POST-SELECTION] rec[-1]
-        MX 9
-        DETECTOR[POST-SELECTION] rec[-1]
-        M 4
-        DETECTOR[POST-SELECTION] rec[-1]
-        MX 0
-        DETECTOR[POST-SELECTION] rec[-1]
-        RX 9 4 1 5 7 6
-        T_DAG 2 15 8 10 11 3 13
-        CX 9 13 4 2 1 8 5 10 7 11 6 15
-        CX 11 9 5 1 2 6
-        CX 2 11 5 3
-        CX 2 5
-        MX 2
-        DETECTOR[POST-SELECTION] rec[-1]
-        RX 2
-        CX 2 5
-        CX 2 11 5 3
-        CX 11 9 5 1 2 6
-        CX 9 13 4 2 1 8 5 10 7 11 6 15
-        T 2 15 8 10 11 3 13
-        MX 9
-        DETECTOR[POST-SELECTION] rec[-1]
-        MX 4
-        DETECTOR[POST-SELECTION] rec[-1]
-        MX 1
-        DETECTOR[POST-SELECTION] rec[-1]
-        MX 5
-        DETECTOR[POST-SELECTION] rec[-1]
-        MX 7
-        DETECTOR[POST-SELECTION] rec[-1]
-        MX 6
-        DETECTOR[POST-SELECTION] rec[-1]
-        """)
+        circuit = tsim.Circuit(BIG2_CIRCUIT)
         splits, noise_ops = gbg.preprocessing(circuit)
         N, num = 100, 0
         passed, results, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, shots=N)
@@ -348,8 +364,45 @@ class MyTestCase(unittest.TestCase):
                 num += 1
         # Impossible (zero-amplitude) RX trajectories are rejected as failed
         # post-selection rather than crashing, so not every shot passes here.
+        # `0 <= num <= N` was true by construction; require real survivors so a
+        # total collapse to zero amplitudes actually fails the test. The observed
+        # rate is ~15%, and 0.85**100 makes a spurious num==0 a 1-in-10-million event.
         self.assertEqual(len(passed), N)
-        self.assertTrue(0 <= num <= N)
+        self.assertGreater(num, 0)
+
+
+    def test_power2_is_rebased(self):
+        """Regression guard for the float32 underflow fix.
+
+        full_reduce accumulates an unbounded sqrt(2) exponent (pivot and lcomp
+        each add O(k**2)). split_circuit_reduce now rebases each decomposition by
+        a shared offset. Without it this circuit compiles to power2 in -15..-40
+        and deeper circuits walk toward the float32 cliff, where tsim's
+        `jnp.pow(2.0, power)` (core/exact_scalar.py) flushes to exactly 0 and
+        both Hadamard branch amplitudes vanish.
+        """
+        circuit = tsim.Circuit(BIG2_CIRCUIT)
+        splits, _noise_ops = gbg.preprocessing(circuit)
+        self.assertGreater(len(splits), 0)
+
+        for k, (compiled, _e_len) in enumerate(splits):
+            power2 = np.asarray(compiled.prefactor.power2)
+            if power2.size == 0:
+                continue
+            top = int(power2.max())
+            # The rebase pins the dominant term at 2**0. Measured: exactly 0 on
+            # every split of this circuit and of the d=3 cultivation circuit;
+            # without it they run -38..-15 and -49..-9 respectively. The -4 floor
+            # leaves room for compile.py shifting things down when the
+            # decomposition's DyadicNumber carries a nonzero k, while staying
+            # tight enough to actually catch the rebase being removed.
+            self.assertLessEqual(top, 0, f"split {k} overflows: power2 max {top}")
+            self.assertGreaterEqual(
+                top, -4,
+                f"split {k} power2 max {top}: the dominant term is not rebased to "
+                f"~2**0, so the exponent drifts with circuit depth toward the "
+                f"float32 underflow cliff at -150",
+            )
 
     # def test_many_t(self):
     #     # H then CNOT produces Bell state — only |00> or |11> should appear
