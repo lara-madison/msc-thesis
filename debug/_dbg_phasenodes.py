@@ -1,5 +1,10 @@
 """Dump scalar structure for each split in test_big2 to localize the structural sqrt(2)."""
 import tsim
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import gate_by_gate as gbg
 
 
