@@ -1,4 +1,5 @@
 import unittest
+import warnings
 import gate_by_gate as gbg
 import pyzx_param as param
 import tsim
@@ -414,6 +415,100 @@ class MyTestCase(unittest.TestCase):
     #     for h in gs:
     #         amplitude += h.scalar.evaluate_scalar(dict(val_param))
     #     print(amplitude / (np.sqrt(2) ** n_qubits))
+
+class NoiseRegressionTest(unittest.TestCase):
+    """Regression guards for noise handling (2026-09-30).
+
+    Sampled X components were never XOR'd into y, so the next Hadamard on any
+    other qubit saw two exactly-zero amplitudes; M(p) / MX(p) readout noise was
+    dropped; and nothing kept noise out of the M -> reset window.
+    """
+
+    def run_gbg(self, text, detectors, shots=64):
+        circuit = tsim.Circuit(text)
+        splits, noise_ops = gbg.preprocessing(circuit)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            passed, _y, _det, _obs = gbg.gate_by_gate(
+                circuit, splits, noise_ops, detectors, shots=shots)
+        zero = [str(w.message) for w in caught if "exactly zero" in str(w.message)]
+        return passed, zero
+
+    def test_x_error_then_hadamard_on_other_qubit(self):
+        # Minimal reproduction: the error on qubit 0 left y[0] stale, so the H on
+        # qubit 1 lost every shot. Detectors read qubits 0 and 2; expected values
+        # agree with tsim's own detector sampler.
+        pc2 = "PAULI_CHANNEL_2(" + ",".join(["{}"] * 15) + ") 0 2"
+        zeros = ["0"] * 15
+        pxi, pix = list(zeros), list(zeros)
+        pxi[3], pix[0] = "1", "1"
+        cases = {
+            "X_ERROR(1) 0": [1, 0],
+            "PAULI_CHANNEL_1(1, 0, 0) 0": [1, 0],
+            "PAULI_CHANNEL_1(0, 1, 0) 0": [1, 0],
+            "PAULI_CHANNEL_1(0, 0, 1) 0": [0, 0],
+            "Z_ERROR(1) 0": [0, 0],
+            pc2.format(*pxi): [1, 0],
+            pc2.format(*pix): [0, 1],
+        }
+        for channel, expected in cases.items():
+            with self.subTest(channel=channel):
+                text = f"R 0 1 2\n{channel}\nH 1\nM 0 1 2\nDETECTOR rec[-3]\nDETECTOR rec[-1]"
+                passed, zero = self.run_gbg(text, expected)
+                self.assertEqual(zero, [])
+                self.assertTrue(all(passed))
+
+    def test_heavy_depolarizing_never_zero_denominator(self):
+        for channel in ("DEPOLARIZE1(0.75) 0", "DEPOLARIZE2(0.9375) 0 2"):
+            with self.subTest(channel=channel):
+                passed, zero = self.run_gbg(f"R 0 1 2\n{channel}\nH 1\nM 0 1 2", [], shots=256)
+                self.assertEqual(zero, [])
+                self.assertTrue(all(passed))
+
+    def test_noise_between_measurement_and_reset(self):
+        # Noise in an M -> reset window is a physical no-op, but it made the
+        # reset's m[i] binding contradict the diagram and every shot was lost.
+        pxi = ["0"] * 15
+        pxi[3] = "1"
+        for channel in ("X_ERROR(1) 0", "Z_ERROR(1) 0",
+                        "PAULI_CHANNEL_2(" + ",".join(pxi) + ") 0 2",
+                        "DEPOLARIZE2(0.9375) 0 2"):
+            with self.subTest(channel=channel):
+                text = f"R 0 1 2\nH 0\nM 0\n{channel}\nR 0\nH 1\nM 1 2"
+                passed, zero = self.run_gbg(text, [], shots=256)
+                self.assertEqual(zero, [])
+                self.assertTrue(all(passed))
+
+    def test_strip_keeps_live_leg_and_measure_then_use_noise(self):
+        stripped = gbg.strip_inert_noise(tsim.Circuit(
+            "R 0 1\nM 0\nDEPOLARIZE2(0.3) 0 1\nR 0\n"
+            "M 1\nX_ERROR(0.1) 1\nCX 1 0"))
+        noise = [(g.name, [t.qubit_value for t in g.targets_copy()], g.gate_args_copy())
+                 for g in stripped if "ERROR" in g.name or "DEPOLARIZE" in g.name]
+        # The dead leg on qubit 0 collapses to qubit 1's exact marginal (4p/5); the
+        # error after M 1 is kept because qubit 1 is used, not reset.
+        self.assertEqual(noise[0][0:2], ("DEPOLARIZE1", [1]))
+        self.assertAlmostEqual(noise[0][2][0], 0.24)
+        self.assertEqual(noise[1], ("X_ERROR", [1], [0.1]))
+
+    def test_readout_noise_flips_record_only(self):
+        # M(1) flips the reported bit, not the state: a second M sees the truth.
+        passed, zero = self.run_gbg(
+            "R 0\nM(1) 0\nM 0\nDETECTOR rec[-2]\nDETECTOR rec[-1]", [1, 0])
+        self.assertTrue(all(passed))
+        passed, zero = self.run_gbg("RX 0\nMX(1) 0\nDETECTOR rec[-1]", [1])
+        self.assertTrue(all(passed))
+        passed, zero = self.run_gbg(
+            "R 0 1\nH 0\nM(1) 0\nR 0\nH 1\nM 1", [], shots=256)
+        self.assertEqual(zero, [])
+        self.assertTrue(all(passed))
+
+    def test_readout_noise_rate(self):
+        N = 20000
+        passed, _zero = self.run_gbg("R 0\nM(0.2) 0\nDETECTOR rec[-1]", [0], shots=N)
+        # sigma = sqrt(0.16 / 20000) ~ 0.003, so 0.02 is ~7 sigma.
+        self.assertAlmostEqual(sum(passed) / N, 0.8, delta=0.02)
+
 
 if __name__ == '__main__':
     unittest.main()

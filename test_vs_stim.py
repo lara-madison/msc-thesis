@@ -17,7 +17,7 @@ so the two are not the same observable. An earlier version of this harness did
 exactly that and produced confident, entirely spurious mismatches. Measurement
 records are apples-to-apples -- same order, same semantics, no frame ambiguity.
 
-Records are pulled out of ``AllDictionaries.measurement_rec`` via a subclass,
+Records are pulled out of ``AllDictionaries.reported_rec`` via a subclass,
 since ``gate_by_gate`` does not return them.
 
 Circuits are Clifford only, so stim is an exact reference. Raise ``SHOTS`` for a
@@ -113,7 +113,7 @@ def gbg_record_dist(circuit_text: str) -> tuple[dict[str, float], float, int]:
     finally:
         gbg.AllDictionaries = original
 
-    record = captured["dicts"].measurement_rec
+    record = captured["dicts"].reported_rec
     if not record:
         return {}, 0.0, 0
     columns = np.stack(record, axis=1)
