@@ -355,21 +355,14 @@ class MyTestCase(unittest.TestCase):
 
 
     def test_big2(self):
-        # X on qubit 0 should always produce |1>
         circuit = tsim.Circuit(BIG2_CIRCUIT)
         splits, noise_ops = gbg.preprocessing(circuit)
-        N, num = 100, 0
-        passed, results, detects, obs = gbg.gate_by_gate(circuit, splits, noise_ops, shots=N)
-        for s in range(N):
-            if passed[s]:
-                num += 1
-        # Impossible (zero-amplitude) RX trajectories are rejected as failed
-        # post-selection rather than crashing, so not every shot passes here.
-        # `0 <= num <= N` was true by construction; require real survivors so a
-        # total collapse to zero amplitudes actually fails the test. The observed
-        # rate is ~15%, and 0.85**100 makes a spurious num==0 a 1-in-10-million event.
-        self.assertEqual(len(passed), N)
-        self.assertGreater(num, 0)
+        N = 100
+        # tsim samples every POST-SELECTION detector here as deterministically 0.
+        # Before the live-lane R fix only ~13% of shots survived the Hadamards.
+        passed, _results, _detects, _obs = gbg.gate_by_gate(
+            circuit, splits, noise_ops, [0] * circuit.num_detectors, shots=N)
+        self.assertEqual(sum(passed), N)
 
 
     def test_power2_is_rebased(self):
@@ -508,6 +501,72 @@ class NoiseRegressionTest(unittest.TestCase):
         passed, _zero = self.run_gbg("R 0\nM(0.2) 0\nDETECTOR rec[-1]", [0], shots=N)
         # sigma = sqrt(0.16 / 20000) ~ 0.003, so 0.02 is ~7 sigma.
         self.assertAlmostEqual(sum(passed) / N, 0.8, delta=0.02)
+
+
+class LiveLaneResetTest(unittest.TestCase):
+    """Regression guards for live-lane R (2026-09-30).
+
+    tsim caps a reset wire with an X-basis m[i] spider, but gate_by_gate binds
+    m[i] to the Z label y. preprocessing now puts a diagram-only H before a
+    live-lane R so the cap becomes <y|.
+    """
+
+    # M 2; R 2 mid-circuit, with T gates around it. Before the fix its record
+    # distribution was 0.18 off tsim's measurement sampler.
+    BIASED_CIRCUIT = """
+        R 0 1 2
+        M 0
+        CX 0 2
+        T 0
+        H 2
+        CX 1 0
+        CX 2 1
+        T 1
+        M 2
+        R 2
+        T 2
+        CX 2 1
+        H 1
+        CX 2 1
+        CX 0 2
+        M 0 1 2
+        """
+
+    def test_live_lane_reset_keeps_every_shot(self):
+        cases = {
+            "superposed": "R 0 1\nH 0\nR 0\nH 1\nM 1",
+            "after RX": "R 1\nRX 0\nR 0\nH 1\nM 1",
+            "after MX of |1>": "R 0 1\nX 0\nMX 0\nR 0\nH 1\nM 1",
+            "after M of |->": "R 0 1\nH 0\nZ 0\nM 0\nR 0\nH 1\nM 1",
+        }
+        for label, text in cases.items():
+            with self.subTest(case=label):
+                circuit = tsim.Circuit(text)
+                splits, noise_ops = gbg.preprocessing(circuit)
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    passed, _y, _det, _obs = gbg.gate_by_gate(
+                        circuit, splits, noise_ops, [], shots=256)
+                self.assertEqual([str(w.message) for w in caught
+                                  if "exactly zero" in str(w.message)], [])
+                self.assertTrue(all(passed))
+
+    def test_live_lane_reset_matches_tsim(self):
+        import test_vs_stim
+
+        reference_shots = 200_000
+        sample = tsim.Circuit(self.BIASED_CIRCUIT).compile_sampler().sample(
+            shots=reference_shots)
+        keys = ["".join(map(str, row.astype(int))) for row in np.asarray(sample)]
+        values, counts = np.unique(keys, return_counts=True)
+        reference = dict(zip(values, counts / reference_shots))
+
+        measured, kept, _n = test_vs_stim.gbg_record_dist(self.BIASED_CIRCUIT)
+        self.assertEqual(kept, 1.0)
+        deviation = max(abs(measured.get(k, 0) - reference.get(k, 0))
+                        for k in set(measured) | set(reference))
+        # 40k gbg shots put the per-outcome sigma near 0.0025; the bug was 0.18.
+        self.assertLess(deviation, 0.03)
 
 
 if __name__ == '__main__':

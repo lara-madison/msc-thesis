@@ -34,6 +34,15 @@ Numerical / correctness notes, 2026-09-30:
    reported bit only, never a diagram element. With both fixes, the cultivation
    circuit's kept rate matches tsim's own detector sampler.
 
+6. Live-lane R (``preprocessing``). tsim caps a reset wire with a Z spider
+   carrying ``m[i]``, an X-basis projection, while gate_by_gate binds ``m[i]``
+   to the Z label ``y``. ``H 0; R 0; H 1`` kept ~50% of shots,
+   ``X 0; MX 0; R 0; H 1`` kept none, and non-Clifford circuits could be biased
+   (0.18 off tsim on one random circuit). A diagram-only H before the R makes
+   the cap the Z-basis projection ``<y|``. big2 went from ~13% kept to 100%;
+   tsim confirms its detectors are deterministic, so the circuit was never at
+   fault.
+
 KNOWN LIMITATION -- "MX-then-use". ``preprocessing`` emits MX as ``H q; M q``,
 dropping the trailing h of tsim's ``h; m; h``
 (tsim/core/instructions.py:1054-1058). That is fine when the qubit is reset
@@ -50,11 +59,9 @@ correct, despite tsim's rx docstring saying it measures in the X basis
 was implemented and measured: big2 kept fell 12.55% -> 6.70% and a GHZ circuit
 fell 100% -> 50%. Reverted; do not retry.
 
-KNOWN LIMITATION -- live-lane R of a superposed qubit. A live-lane reset caps
-the old wire with an ``m[i]`` spider that binds to ``y``. If the wire was left in
-superposition by an H with no measurement in between, that binding is
-consistent only half the time: ``R 0 1; H 0; R 0; H 1`` keeps ~50% of shots.
-Probably the source of big2's noiseless ~15% loss; not yet verified.
+KNOWN LIMITATION -- M-then-interfere. The Z-basis analogue of MX-then-use: an
+M followed by an H on the same qubit (with T gates between) before any reset is
+biased by ~0.1 against tsim. Needs the same per-wire basis frame.
 """
 
 import numpy as np
@@ -342,6 +349,13 @@ def preprocessing(circuit: tsim.Circuit) :
 
             elif gate.name == "R":
                 q = targets[i].qubit_value
+                # NOTE: a live-lane R caps the old wire with a degree-1 Z spider
+                # carrying m[i], i.e. an X-basis projection, but gate_by_gate binds
+                # m[i] to the Z label y[q]. The diagram-only H turns the cap into
+                # the Z-basis projection <y[q]|, exactly as the leading h of tsim's
+                # live-lane RX does. No split: the discarded wire is not sampled.
+                if is_initialized[q]:
+                    circ_until_now.append_from_stim_program_text(f"H {q}")
                 circ_until_now.append_from_stim_program_text(f"R {q}")
                 if(is_initialized[q]):
                     m_len += 1
