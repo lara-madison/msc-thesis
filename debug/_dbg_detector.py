@@ -1,6 +1,8 @@
 """Diagnostic script: reproduce the detector mismatch on the big circuit."""
 import sys
-sys.path.insert(0, "/Users/laramadison/Desktop/MastersProgram/Thesis/thesisNotebooks")
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import random
 import numpy as np
